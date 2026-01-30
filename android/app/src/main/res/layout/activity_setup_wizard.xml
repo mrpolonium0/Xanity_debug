@@ -1,0 +1,295 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:app="http://schemas.android.com/apk/res-auto"
+  android:id="@+id/setup_root"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:background="@drawable/setup_wizard_background"
+  android:fitsSystemWindows="true">
+
+  <androidx.core.widget.NestedScrollView
+    android:id="@+id/setup_scroll"
+    android:layout_width="0dp"
+    android:layout_height="0dp"
+    android:clipToPadding="false"
+    android:fillViewport="true"
+    android:padding="24dp"
+    app:layout_constraintBottom_toBottomOf="parent"
+    app:layout_constraintEnd_toEndOf="parent"
+    app:layout_constraintStart_toStartOf="parent"
+    app:layout_constraintTop_toTopOf="parent">
+
+    <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:gravity="center_horizontal"
+      android:orientation="vertical">
+
+      <com.google.android.material.card.MaterialCardView
+        android:id="@+id/setup_card"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:cardBackgroundColor="@color/xemu_surface"
+        app:cardCornerRadius="28dp"
+        app:cardElevation="8dp"
+        app:cardUseCompatPadding="true"
+        app:strokeColor="@color/xemu_outline_variant"
+        app:strokeWidth="1dp">
+
+        <LinearLayout
+          android:layout_width="match_parent"
+          android:layout_height="match_parent"
+          android:orientation="vertical"
+          android:padding="24dp">
+
+          <TextView
+            android:id="@+id/setup_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:text="@string/setup_title"
+            android:textAppearance="@style/TextAppearance.Material3.HeadlineMedium" />
+
+          <TextView
+            android:id="@+id/setup_subtitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="6dp"
+            android:text="@string/setup_subtitle"
+            android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+            android:textColor="@color/xemu_text_muted" />
+
+          <FrameLayout
+            android:id="@+id/setup_pages"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp">
+
+            <LinearLayout
+              android:id="@+id/page_mcpx"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:orientation="vertical">
+
+              <ImageView
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_gravity="center_horizontal"
+                android:contentDescription="@string/setup_mcpx_title"
+                android:src="@android:drawable/ic_menu_upload"
+                android:tint="@color/xemu_green" />
+
+              <TextView
+                android:id="@+id/setup_mcpx_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/setup_mcpx_title"
+                android:textAppearance="@style/TextAppearance.Material3.TitleLarge" />
+
+              <TextView
+                android:id="@+id/setup_mcpx_body"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/setup_mcpx_body"
+                android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+                android:textColor="@color/xemu_text_muted" />
+
+              <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_pick_mcpx"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/setup_pick_mcpx"
+                app:icon="@android:drawable/ic_menu_upload"
+                app:iconGravity="textStart"
+                app:iconPadding="8dp" />
+
+              <TextView
+                android:id="@+id/mcpx_path_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/setup_wizard_path_background"
+                android:ellipsize="end"
+                android:maxLines="2"
+                android:text="@string/setup_not_set"
+                android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+                android:textColor="@color/xemu_text_muted" />
+            </LinearLayout>
+
+            <LinearLayout
+              android:id="@+id/page_flash"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:orientation="vertical"
+              android:visibility="gone">
+
+              <ImageView
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_gravity="center_horizontal"
+                android:contentDescription="@string/setup_flash_title"
+                android:src="@android:drawable/ic_menu_manage"
+                android:tint="@color/xemu_green" />
+
+              <TextView
+                android:id="@+id/setup_flash_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/setup_flash_title"
+                android:textAppearance="@style/TextAppearance.Material3.TitleLarge" />
+
+              <TextView
+                android:id="@+id/setup_flash_body"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/setup_flash_body"
+                android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+                android:textColor="@color/xemu_text_muted" />
+
+              <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_pick_flash"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/setup_pick_flash"
+                app:icon="@android:drawable/ic_menu_manage"
+                app:iconGravity="textStart"
+                app:iconPadding="8dp" />
+
+              <TextView
+                android:id="@+id/flash_path_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/setup_wizard_path_background"
+                android:ellipsize="end"
+                android:maxLines="2"
+                android:text="@string/setup_not_set"
+                android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+                android:textColor="@color/xemu_text_muted" />
+            </LinearLayout>
+
+            <LinearLayout
+              android:id="@+id/page_hdd"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:orientation="vertical"
+              android:visibility="gone">
+
+              <ImageView
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_gravity="center_horizontal"
+                android:contentDescription="@string/setup_hdd_title"
+                android:src="@android:drawable/ic_menu_save"
+                android:tint="@color/xemu_green" />
+
+              <TextView
+                android:id="@+id/setup_hdd_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/setup_hdd_title"
+                android:textAppearance="@style/TextAppearance.Material3.TitleLarge" />
+
+              <TextView
+                android:id="@+id/setup_hdd_body"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/setup_hdd_body"
+                android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+                android:textColor="@color/xemu_text_muted" />
+
+              <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_pick_hdd"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/setup_pick_hdd"
+                app:icon="@android:drawable/ic_menu_save"
+                app:iconGravity="textStart"
+                app:iconPadding="8dp" />
+
+              <TextView
+                android:id="@+id/hdd_path_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/setup_wizard_path_background"
+                android:ellipsize="end"
+                android:maxLines="2"
+                android:text="@string/setup_not_set"
+                android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+                android:textColor="@color/xemu_text_muted" />
+            </LinearLayout>
+          </FrameLayout>
+
+          <Space
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+          <LinearLayout
+            android:id="@+id/setup_step_indicator"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="20dp"
+            android:orientation="horizontal">
+
+            <View
+              android:id="@+id/step_indicator_mcpx"
+              android:layout_width="28dp"
+              android:layout_height="6dp"
+              android:background="@drawable/setup_wizard_indicator_active" />
+
+            <View
+              android:id="@+id/step_indicator_flash"
+              android:layout_width="28dp"
+              android:layout_height="6dp"
+              android:layout_marginStart="8dp"
+              android:background="@drawable/setup_wizard_indicator_inactive" />
+
+            <View
+              android:id="@+id/step_indicator_hdd"
+              android:layout_width="28dp"
+              android:layout_height="6dp"
+              android:layout_marginStart="8dp"
+              android:background="@drawable/setup_wizard_indicator_inactive" />
+          </LinearLayout>
+
+          <LinearLayout
+            android:id="@+id/setup_nav_buttons"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_wizard_back"
+              style="?attr/materialButtonOutlinedStyle"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:text="@string/setup_back" />
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_wizard_next"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_marginStart="12dp"
+              android:layout_weight="1"
+              android:text="@string/setup_next" />
+          </LinearLayout>
+        </LinearLayout>
+      </com.google.android.material.card.MaterialCardView>
+    </LinearLayout>
+  </androidx.core.widget.NestedScrollView>
+</androidx.constraintlayout.widget.ConstraintLayout>

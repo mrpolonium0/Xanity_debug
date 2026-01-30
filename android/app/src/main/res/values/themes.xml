@@ -1,0 +1,20 @@
+<resources>
+  <style name="Theme.Xemu" parent="Theme.Material3.DayNight.NoActionBar">
+    <item name="colorPrimary">@color/xemu_green</item>
+    <item name="colorOnPrimary">@color/xemu_black</item>
+    <item name="colorPrimaryContainer">@color/xemu_green_dark</item>
+    <item name="colorOnPrimaryContainer">@color/xemu_text</item>
+
+    <item name="colorSecondary">@color/xemu_green</item>
+    <item name="colorOnSecondary">@color/xemu_black</item>
+
+    <item name="android:colorBackground">@color/xemu_black</item>
+    <item name="colorSurface">@color/xemu_surface</item>
+    <item name="colorOnSurface">@color/xemu_text</item>
+    <item name="colorSurfaceVariant">@color/xemu_surface_variant</item>
+    <item name="colorOnSurfaceVariant">@color/xemu_text_muted</item>
+
+    <item name="colorOutline">@color/xemu_outline</item>
+    <item name="colorOutlineVariant">@color/xemu_outline_variant</item>
+  </style>
+</resources>
