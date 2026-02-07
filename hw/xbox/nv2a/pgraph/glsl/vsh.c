@@ -210,10 +210,10 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
         "\n"
         // Clamp to range [2^(-64), 2^64] or [-2^64, -2^(-64)].
         "float clampAwayZeroInf(float t) {\n"
-        "  if (t > 0.0 || floatBitsToUint(t) == 0) {\n"
-        "    t = clamp(t, uintBitsToFloat(0x1F800000), uintBitsToFloat(0x5F800000));\n"
+        "  if (t > 0.0 || floatBitsToUint(t) == 0u) {\n"
+        "    t = clamp(t, uintBitsToFloat(0x1F800000u), uintBitsToFloat(0x5F800000u));\n"
         "  } else {\n"
-        "    t = clamp(t, uintBitsToFloat(0xDF800000), uintBitsToFloat(0x9F800000));\n"
+        "    t = clamp(t, uintBitsToFloat(0xDF800000u), uintBitsToFloat(0x9F800000u));\n"
         "  }\n"
         "  return t;\n"
         "}\n"
@@ -250,6 +250,7 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
                        "#define vtxPos1 v_vtxPos1\n"
                        "#define vtxPos2 v_vtxPos2\n"
                        "#define triMZ v_triMZ\n"
+                       "#define vtxPointSize v_vtxPointSize\n"
                        );
     }
     mstring_append(header, "\n");
@@ -305,7 +306,7 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
             VSH_VERSION_XVS, (uint32_t *)state->programmable.program_data,
             state->programmable.program_length, header, body);
         if (!state->point_params_enable) {
-            mstring_append_fmt(body, "  oPts.x = %f * %d;\n",
+            mstring_append_fmt(body, "  oPts.x = %f * float(%d);\n",
                                state->point_size <= 0.f ? 1.f :
                                                           state->point_size,
                                state->surface_scale_factor);
@@ -409,6 +410,7 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
                    "  vtxPos1 = vtxPos;\n"
                    "  vtxPos2 = vtxPos;\n"
                    "  triMZ = 0.0;\n"
+                   "  vtxPointSize = oPts.x;\n"
                    "  gl_PointSize = oPts.x;\n"
     );
 
@@ -444,8 +446,9 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
     mstring_append(body, "}\n");
 
     /* Return combined header + source */
-    MString *output =
-        mstring_from_fmt("#version %d\n\n", opts.vulkan ? 450 : 400);
+    MString *output = mstring_new();
+    pgraph_glsl_append_version(output, opts.vulkan, opts.gles,
+                               opts.gles_version);
 
     if (opts.vulkan) {
         // FIXME: Optimize uniforms

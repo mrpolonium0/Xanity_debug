@@ -23,6 +23,9 @@
  */
 
 #include "qemu/osdep.h"
+#ifdef __ANDROID__
+#include <sys/sysmacros.h>
+#endif
 #include "qapi/error.h"
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"

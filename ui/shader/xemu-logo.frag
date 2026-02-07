@@ -158,7 +158,7 @@ float getParticles(vec2 uv)
 
 void main()
 {
-    vec2 uv = gl_FragCoord.xy/vec2(512);
+    vec2 uv = gl_FragCoord.xy*vec2(512.0);
     float scale = 1.4;
     uv -= 0.5 * (1.-1./scale);
     uv *= scale;

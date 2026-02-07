@@ -24,6 +24,10 @@
 #include "debug.h"
 #include "renderer.h"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
 void pgraph_gl_clear_surface(NV2AState *d, uint32_t parameter)
 {
     PGRAPHState *pg = &d->pgraph;
@@ -225,7 +229,9 @@ void pgraph_gl_draw_begin(NV2AState *d)
         glDisable(GL_DEPTH_TEST);
     }
 
+#ifndef __ANDROID__
     glEnable(GL_DEPTH_CLAMP);
+#endif
 
     /* Set first vertex convention to match Vulkan default */
     glProvokingVertex(GL_FIRST_VERTEX_CONVENTION);
@@ -279,6 +285,10 @@ void pgraph_gl_draw_begin(NV2AState *d)
     bool anti_aliasing = GET_MASK(pgraph_reg_r(pg, NV_PGRAPH_ANTIALIASING), NV_PGRAPH_ANTIALIASING_ENABLE);
 
     /* Edge Antialiasing */
+#ifdef __ANDROID__
+    glLineWidth(MIN(r->supported_aliased_line_width_range[1],
+                    pg->surface_scale_factor));
+#else
     if (!anti_aliasing && pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER) &
                               NV_PGRAPH_SETUPRASTER_LINESMOOTHENABLE) {
         glEnable(GL_LINE_SMOOTH);
@@ -293,6 +303,7 @@ void pgraph_gl_draw_begin(NV2AState *d)
     } else {
         glDisable(GL_POLYGON_SMOOTH);
     }
+#endif
 
     unsigned int vp_width = pg->surface_binding_dim.width,
                  vp_height = pg->surface_binding_dim.height;
@@ -367,6 +378,8 @@ void pgraph_gl_draw_end(NV2AState *d)
     }
 
     pg->draw_time++;
+#ifdef __ANDROID__
+#endif
     if (r->color_binding && pgraph_color_write_enabled(pg)) {
         r->color_binding->draw_time = pg->draw_time;
     }

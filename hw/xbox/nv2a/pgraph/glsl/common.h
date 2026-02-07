@@ -99,6 +99,8 @@ typedef struct UniformInfo {
 
 MString *pgraph_glsl_get_vtx_header(MString *out, bool location, bool smooth,
                                     bool in, bool prefix, bool array);
+void pgraph_glsl_append_version(MString *out, bool vulkan, bool gles,
+                                int gles_version);
 
 typedef struct PGRAPHState PGRAPHState;
 

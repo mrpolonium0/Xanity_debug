@@ -59,6 +59,7 @@
 #endif
 
 #include "qemu/memalign.h"
+#include "qemu/memfd.h"
 #include "qemu/mmap-alloc.h"
 
 #define MAX_MEM_PREALLOC_THREAD_COUNT 16
@@ -984,6 +985,9 @@ void qemu_close_all_open_fd(const int *skip, unsigned int nskip)
 
 int qemu_shm_alloc(size_t size, Error **errp)
 {
+#ifdef __ANDROID__
+    return qemu_memfd_create("qemu-shm", size, false, 0, 0, errp);
+#else
     g_autoptr(GString) shm_name = g_string_new(NULL);
     int fd, oflag, cur_sequence;
     static int sequence;
@@ -1032,4 +1036,5 @@ int qemu_shm_alloc(size_t size, Error **errp)
     }
 
     return fd;
+#endif
 }

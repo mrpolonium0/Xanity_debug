@@ -709,3 +709,9 @@ static void usb_hub_register_types(void)
 }
 
 type_init(usb_hub_register_types)
+
+#ifdef __ANDROID__
+void xemu_android_force_usb_hub_link(void)
+{
+}
+#endif

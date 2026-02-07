@@ -56,3 +56,9 @@ static void register_types(void)
 }
 
 type_init(register_types);
+
+#ifdef __ANDROID__
+void xemu_android_force_mem_backend_ram_link(void)
+{
+}
+#endif

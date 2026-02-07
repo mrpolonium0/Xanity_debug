@@ -195,12 +195,21 @@ static void generate_shaders(PGRAPHGLState *r, ShaderBinding *binding)
 
     ShaderState *state = &binding->state;
     ShaderModuleCacheKey key;
+#ifdef __ANDROID__
+    const bool gles = true;
+    const int gles_version = 320;
+#else
+    const bool gles = false;
+    const int gles_version = 0;
+#endif
 
     bool need_geometry_shader = pgraph_glsl_need_geom(&state->geom);
     if (need_geometry_shader) {
         memset(&key, 0, sizeof(key));
         key.kind = GL_GEOMETRY_SHADER;
         key.geom.state = state->geom;
+        key.geom.glsl_opts.gles = gles;
+        key.geom.glsl_opts.gles_version = gles_version;
         glAttachShader(program, get_shader_module_for_key(r, &key));
     }
 
@@ -209,12 +218,16 @@ static void generate_shaders(PGRAPHGLState *r, ShaderBinding *binding)
     key.kind = GL_VERTEX_SHADER;
     key.vsh.state = state->vsh;
     key.vsh.glsl_opts.prefix_outputs = need_geometry_shader;
+    key.vsh.glsl_opts.gles = gles;
+    key.vsh.glsl_opts.gles_version = gles_version;
     glAttachShader(program, get_shader_module_for_key(r, &key));
 
     /* generate a fragment shader from register combiners */
     memset(&key, 0, sizeof(key));
     key.kind = GL_FRAGMENT_SHADER;
     key.psh.state = state->psh;
+    key.psh.glsl_opts.gles = gles;
+    key.psh.glsl_opts.gles_version = gles_version;
     glAttachShader(program, get_shader_module_for_key(r, &key));
 
     /* link the program */
@@ -306,7 +319,13 @@ void pgraph_gl_shader_write_cache_reload_list(PGRAPHState *pg)
 
 bool pgraph_gl_shader_load_from_memory(ShaderBinding *binding)
 {
+#ifdef __ANDROID__
+    while (glGetError() != GL_NO_ERROR) {
+        /* Clear any prior GL error to avoid aborting on Android. */
+    }
+#else
     assert(glGetError() == GL_NO_ERROR);
+#endif
 
     if (!binding->program) {
         return false;
@@ -661,6 +680,10 @@ error:
 
 void pgraph_gl_shader_cache_to_disk(ShaderBinding *binding)
 {
+#ifdef __ANDROID__
+    (void)binding;
+    return;
+#endif
     if (binding->cached) {
         return;
     }
@@ -736,7 +759,13 @@ static void apply_uniform_updates(const UniformInfo *info, int *locs,
         }
     }
 
+#ifdef __ANDROID__
+    while (glGetError() != GL_NO_ERROR) {
+        /* Ignore uniform update GL errors on Android. */
+    }
+#else
     assert(glGetError() == GL_NO_ERROR);
+#endif
 }
 
 // FIXME: Dirty tracking

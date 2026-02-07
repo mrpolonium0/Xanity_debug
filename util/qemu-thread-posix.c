@@ -76,6 +76,12 @@ void qemu_mutex_init(QemuMutex *mutex)
 
 void qemu_mutex_destroy(QemuMutex *mutex)
 {
+#ifdef __ANDROID__
+    /* Avoid destroying mutexes on Android; some callers may still lock them
+     * during early shutdown, which triggers bionic FORTIFY aborts. */
+    (void)mutex;
+    return;
+#else
     int err;
 
     assert(mutex->initialized);
@@ -83,6 +89,7 @@ void qemu_mutex_destroy(QemuMutex *mutex)
     err = pthread_mutex_destroy(&mutex->lock);
     if (err)
         error_exit(err, __func__);
+#endif
 }
 
 void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, const int line)

@@ -52,6 +52,7 @@ MString *pgraph_glsl_get_vtx_header(MString *out, bool location, bool smooth,
         { flat_s,      vec4_s,  "vtxPos1" },
         { flat_s,      vec4_s,  "vtxPos2" },
         { flat_s,      float_s, "triMZ"  },
+        { smooth_s,    float_s, "vtxPointSize" },
     };
 
     for (int i = 0; i < ARRAY_SIZE(attr); i++) {
@@ -64,6 +65,31 @@ MString *pgraph_glsl_get_vtx_header(MString *out, bool location, bool smooth,
     }
 
     return out;
+}
+
+void pgraph_glsl_append_version(MString *out, bool vulkan, bool gles,
+                                int gles_version)
+{
+    if (vulkan) {
+        mstring_append(out, "#version 450\n\n");
+        return;
+    }
+
+    if (gles) {
+        int version = gles_version ? gles_version : 300;
+        mstring_append_fmt(out, "#version %d es\n\n", version);
+        mstring_append(out,
+                       "precision highp float;\n"
+                       "precision highp int;\n"
+                       "precision highp sampler2D;\n"
+                       "precision highp sampler3D;\n"
+                       "precision highp samplerCube;\n"
+                       "precision highp usampler2D;\n"
+                       "\n");
+        return;
+    }
+
+    mstring_append(out, "#version 400\n\n");
 }
 
 void pgraph_glsl_set_clip_range_uniform_value(PGRAPHState *pg, float clipRange[4])

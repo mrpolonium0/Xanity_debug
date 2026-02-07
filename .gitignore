@@ -26,3 +26,15 @@ build.log
 /macos-libs/
 /macos-pkgs/
 /xemu.iconset/
+
+# Common local junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+/.idea/
+
+# Local logs and crash dumps
+*.log
+logcat_*.txt
+hs_err_pid*.log
+replay_pid*.log

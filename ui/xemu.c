@@ -60,6 +60,9 @@
 #include <stb_image.h>
 #include <locale.h>
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 #ifdef _WIN32
 #include "nvapi.h"
 // Provide hint to prefer high-performance graphics for hybrid systems
@@ -116,11 +119,190 @@ static SDL_Cursor *guest_sprite;
 static Notifier mouse_mode_notifier;
 static SDL_Window *m_window;
 static SDL_GLContext m_context;
+static SDL_threadID sdl_render_thread_id;
 // struct decal_shader *blit;
 
 static QemuSemaphore display_init_sem;
 
 static void toggle_full_screen(struct sdl2_console *scon);
+
+#ifdef __ANDROID__
+static bool g_android_gl_bgra_supported = true;
+static bool g_android_use_hud = false;
+static bool g_android_paused = false;
+static bool g_android_should_quit = false;
+static uint64_t g_android_frame_counter = 0;
+static GLuint g_android_blit_prog;
+static GLuint g_android_blit_vao;
+static GLuint g_android_blit_vbo;
+static GLint g_android_blit_tex_loc = -1;
+static GLint g_android_blit_flip_loc = -1;
+static GLuint g_android_cpu_tex = 0;
+static int g_android_cpu_tex_w = 0;
+static int g_android_cpu_tex_h = 0;
+static uint8_t *g_android_cpu_buf = NULL;
+static size_t g_android_cpu_buf_size = 0;
+
+static bool sdl2_is_render_thread(void)
+{
+    return sdl_render_thread_id != 0 && SDL_ThreadID() == sdl_render_thread_id;
+}
+
+static bool sdl2_gl_has_extension(const char *ext_list, const char *ext)
+{
+    if (!ext_list || !ext || !ext[0]) {
+        return false;
+    }
+    const size_t len = strlen(ext);
+    const char *pos = ext_list;
+    while ((pos = strstr(pos, ext)) != NULL) {
+        const char *end = pos + len;
+        if ((pos == ext_list || pos[-1] == ' ') &&
+            (*end == '\0' || *end == ' ')) {
+            return true;
+        }
+        pos = end;
+    }
+    return false;
+}
+
+static void android_log_gl_error(const char *stage)
+{
+    GLenum err;
+    bool logged = false;
+    while ((err = glGetError()) != GL_NO_ERROR) {
+        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                            "GL error at %s: 0x%x", stage, err);
+        logged = true;
+    }
+    (void)logged;
+}
+
+static GLuint android_gl_compile_shader(GLenum type, const char *src)
+{
+    GLuint shader = glCreateShader(type);
+    if (!shader) {
+        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                            "android_gl_compile_shader: glCreateShader failed");
+        return 0;
+    }
+    glShaderSource(shader, 1, &src, NULL);
+    glCompileShader(shader);
+    GLint status = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+    if (status != GL_TRUE) {
+        char log[1024] = {0};
+        GLsizei len = 0;
+        glGetShaderInfoLog(shader, (GLsizei)sizeof(log) - 1, &len, log);
+        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                            "shader compile failed: %s", log);
+        glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+static bool android_blit_init(void)
+{
+    if (g_android_blit_prog) {
+        return true;
+    }
+    const char *vs = "#version 300 es\n"
+                     "precision highp float;\n"
+                     "layout(location=0) in vec2 a_pos;\n"
+                     "layout(location=1) in vec2 a_uv;\n"
+                     "uniform bool u_flip;\n"
+                     "out vec2 v_uv;\n"
+                     "void main() {\n"
+                     "  v_uv = a_uv;\n"
+                     "  if (u_flip) { v_uv.y = 1.0 - v_uv.y; }\n"
+                     "  gl_Position = vec4(a_pos, 0.0, 1.0);\n"
+                     "}\n";
+    const char *fs = "#version 300 es\n"
+                     "precision highp float;\n"
+                     "in vec2 v_uv;\n"
+                     "uniform sampler2D u_tex;\n"
+                     "out vec4 out_Color;\n"
+                     "void main() {\n"
+                     "  out_Color = texture(u_tex, v_uv);\n"
+                     "}\n";
+
+    GLuint vshader = android_gl_compile_shader(GL_VERTEX_SHADER, vs);
+    GLuint fshader = android_gl_compile_shader(GL_FRAGMENT_SHADER, fs);
+    if (!vshader || !fshader) {
+        return false;
+    }
+
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, vshader);
+    glAttachShader(prog, fshader);
+    glLinkProgram(prog);
+    glDeleteShader(vshader);
+    glDeleteShader(fshader);
+
+    GLint linked = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[1024] = {0};
+        GLsizei len = 0;
+        glGetProgramInfoLog(prog, (GLsizei)sizeof(log) - 1, &len, log);
+        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                            "shader link failed: %s", log);
+        glDeleteProgram(prog);
+        return false;
+    }
+
+    g_android_blit_prog = prog;
+    g_android_blit_tex_loc = glGetUniformLocation(prog, "u_tex");
+    g_android_blit_flip_loc = glGetUniformLocation(prog, "u_flip");
+
+    const float verts[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    glGenVertexArrays(1, &g_android_blit_vao);
+    glBindVertexArray(g_android_blit_vao);
+    glGenBuffers(1, &g_android_blit_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, g_android_blit_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (void *)(2 * sizeof(float)));
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+
+    return true;
+}
+
+static void android_blit_frame(GLuint tex, bool flip)
+{
+    if (!android_blit_init()) {
+        return;
+    }
+    android_log_gl_error("blit-start");
+    int w = 0;
+    int h = 0;
+    SDL_GL_GetDrawableSize(m_window, &w, &h);
+    if (w <= 0) w = 1;
+    if (h <= 0) h = 1;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, w, h);
+    glUseProgram(g_android_blit_prog);
+    glUniform1i(g_android_blit_tex_loc, 0);
+    glUniform1i(g_android_blit_flip_loc, flip ? 1 : 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glBindVertexArray(g_android_blit_vao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    android_log_gl_error("blit-draw");
+}
+#endif
 
 int xemu_is_fullscreen(void)
 {
@@ -518,8 +700,18 @@ static void handle_windowevent(SDL_Event *ev)
         }
         break;
     case SDL_WINDOWEVENT_RESTORED:
+#ifdef __ANDROID__
+        g_android_paused = false;
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "android: window restored");
+#endif
         break;
     case SDL_WINDOWEVENT_MINIMIZED:
+#ifdef __ANDROID__
+        g_android_paused = true;
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "android: window minimized");
+#endif
         break;
     case SDL_WINDOWEVENT_CLOSE:
         if (qemu_console_is_graphic(scon->dcl.con)) {
@@ -529,6 +721,11 @@ static void handle_windowevent(SDL_Event *ev)
             if (allow_close) {
                 shutdown_action = SHUTDOWN_ACTION_POWEROFF;
                 qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_UI);
+#ifdef __ANDROID__
+                g_android_should_quit = true;
+                __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                    "android: window close requested");
+#endif
             }
         } else {
             SDL_HideWindow(scon->real_window);
@@ -537,9 +734,19 @@ static void handle_windowevent(SDL_Event *ev)
         break;
     case SDL_WINDOWEVENT_SHOWN:
         scon->hidden = false;
+#ifdef __ANDROID__
+        g_android_paused = false;
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "android: window shown");
+#endif
         break;
     case SDL_WINDOWEVENT_HIDDEN:
         scon->hidden = true;
+#ifdef __ANDROID__
+        g_android_paused = true;
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "android: window hidden");
+#endif
         break;
     }
 }
@@ -555,12 +762,24 @@ void sdl2_poll_events(struct sdl2_console *scon)
     }
 
     int kbd = 0, mouse = 0;
+#ifdef __ANDROID__
+    if (g_android_use_hud) {
+        xemu_hud_should_capture_kbd_mouse(&kbd, &mouse);
+    }
+#else
     xemu_hud_should_capture_kbd_mouse(&kbd, &mouse);
+#endif
 
     while (SDL_PollEvent(ev)) {
         // HUD must process events first so that if a controller is detached,
         // a latent rebind request can cancel before the state is freed
+#ifdef __ANDROID__
+        if (g_android_use_hud) {
+            xemu_hud_process_sdl_events(ev);
+        }
+#else
         xemu_hud_process_sdl_events(ev);
+#endif
         xemu_input_process_sdl_events(ev);
 
         switch (ev->type) {
@@ -583,8 +802,32 @@ void sdl2_poll_events(struct sdl2_console *scon)
             if (allow_close) {
                 shutdown_action = SHUTDOWN_ACTION_POWEROFF;
                 qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_UI);
+#ifdef __ANDROID__
+                g_android_should_quit = true;
+                __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                    "android: SDL_QUIT");
+#endif
             }
             break;
+#ifdef __ANDROID__
+        case SDL_APP_TERMINATING:
+            g_android_should_quit = true;
+            __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                "android: app terminating");
+            break;
+        case SDL_APP_WILLENTERBACKGROUND:
+        case SDL_APP_DIDENTERBACKGROUND:
+            g_android_paused = true;
+            __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                "android: app background");
+            break;
+        case SDL_APP_WILLENTERFOREGROUND:
+        case SDL_APP_DIDENTERFOREGROUND:
+            g_android_paused = false;
+            __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                "android: app foreground");
+            break;
+#endif
         case SDL_MOUSEMOTION:
             if (mouse) break;
             handle_mousemotion(ev);
@@ -682,7 +925,11 @@ static const DisplayChangeListenerOps dcl_gl_ops = {
 
 static void sdl2_display_very_early_init(DisplayOptions *o)
 {
-#ifdef __linux__
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "sdl2_display_very_early_init: start");
+#endif
+#if defined(__linux__) && !defined(__ANDROID__)
     /* on Linux, SDL may use fbcon|directfb|svgalib when run without
      * accessible $DISPLAY to open X11 window.  This is often the case
      * when qemu is run using sudo.  But in this case, and when actually
@@ -693,6 +940,12 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
      * Maybe it's a good idea to fix this in SDL instead.
      */
     setenv("SDL_VIDEODRIVER", "x11", 0);
+#endif
+
+#ifdef __ANDROID__
+    SDL_setenv("SDL_AUDIODRIVER", "aaudio", 0);
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "SDL_AUDIODRIVER=%s", SDL_getenv("SDL_AUDIODRIVER"));
 #endif
 
     if (SDL_Init(SDL_INIT_VIDEO)) {
@@ -708,17 +961,26 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
     SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
 
     // Initialize rendering context
+    // Note: On Android, we always need GL context even for Vulkan because
+    // Vulkan uses GL external memory for display presentation
     SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+#ifdef __ANDROID__
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
+                        SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+#else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
     SDL_GL_SetAttribute(
         SDL_GL_CONTEXT_PROFILE_MASK,
         SDL_GL_CONTEXT_PROFILE_CORE);
+#endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     char *title = g_strdup_printf("xemu | v%s"
@@ -761,7 +1023,16 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
         window_height = min_window_height;
     }
 
+    // On Android, always use OpenGL window even for Vulkan because Vulkan
+    // needs GL context for external memory display presentation
+#ifdef __ANDROID__
     SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+#else
+    bool use_vulkan = (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_VULKAN);
+    SDL_WindowFlags window_flags = (SDL_WindowFlags)(
+        (use_vulkan ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL) | 
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+#endif
 
     // Create main window
     m_window = SDL_CreateWindow(
@@ -784,24 +1055,47 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
 
     m_context = SDL_GL_CreateContext(m_window);
 
+#ifndef __ANDROID__
     if (m_context != NULL && epoxy_gl_version() < 40) {
         SDL_GL_MakeCurrent(NULL, NULL);
         SDL_GL_DeleteContext(m_context);
         m_context = NULL;
     }
+#endif
 
     if (m_context == NULL) {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-            "Unable to create OpenGL context",
+#ifdef __ANDROID__
+        const char *msg =
+            "Unable to create OpenGL ES context. This usually means the\r\n"
+            "graphics device on this system does not support OpenGL ES 3.0.\r\n"
+            "\r\n"
+            "xemu cannot continue and will now exit.";
+#else
+        const char *msg =
             "Unable to create OpenGL context. This usually means the\r\n"
             "graphics device on this system does not support OpenGL 4.0.\r\n"
             "\r\n"
-            "xemu cannot continue and will now exit.",
+            "xemu cannot continue and will now exit.";
+#endif
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+            "Unable to create OpenGL context",
+            msg,
             m_window);
         SDL_DestroyWindow(m_window);
         SDL_Quit();
         exit(1);
     }
+
+    if (SDL_GL_MakeCurrent(m_window, m_context) != 0) {
+        fprintf(stderr, "Failed to make GL context current: %s\n", SDL_GetError());
+        SDL_DestroyWindow(m_window);
+        SDL_Quit();
+        exit(1);
+    }
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "sdl2_display_very_early_init: GL context current");
+#endif
 
     int width, height, channels = 0;
     stbi_set_flip_vertically_on_load(0);
@@ -822,11 +1116,43 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
     fprintf(stderr, "GL_RENDERER: %s\n", glGetString(GL_RENDERER));
     fprintf(stderr, "GL_VERSION: %s\n", glGetString(GL_VERSION));
     fprintf(stderr, "GL_SHADING_LANGUAGE_VERSION: %s\n", glGetString(GL_SHADING_LANGUAGE_VERSION));
+#ifdef __ANDROID__
+    {
+        const char *vendor = (const char *)glGetString(GL_VENDOR);
+        const char *renderer = (const char *)glGetString(GL_RENDERER);
+        const char *version = (const char *)glGetString(GL_VERSION);
+        const char *sl = (const char *)glGetString(GL_SHADING_LANGUAGE_VERSION);
+        const char *exts = (const char *)glGetString(GL_EXTENSIONS);
+        g_android_gl_bgra_supported = sdl2_gl_has_extension(exts, "GL_EXT_texture_format_BGRA8888") ||
+                                      sdl2_gl_has_extension(exts, "GL_EXT_texture_format_BGRA8888_OES");
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "GL_VENDOR=%s", vendor ? vendor : "(null)");
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "GL_RENDERER=%s", renderer ? renderer : "(null)");
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "GL_VERSION=%s", version ? version : "(null)");
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "GLSL_VERSION=%s", sl ? sl : "(null)");
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "GL_EXT_texture_format_BGRA8888=%s",
+                            g_android_gl_bgra_supported ? "yes" : "no");
+    }
+#endif
 
     // Initialize offscreen rendering context now
+#ifdef __ANDROID__
+    // Android uses a separate preinit path on the SDL thread.
+#else
     nv2a_context_init();
+#endif
+#ifndef __ANDROID__
     SDL_GL_MakeCurrent(NULL, NULL);
+#endif
 
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "sdl2_display_very_early_init: done");
+#endif
     // FIXME: atexit(sdl_cleanup);
 }
 
@@ -835,9 +1161,18 @@ static void sdl2_display_early_init(DisplayOptions *o)
     assert(o->type == DISPLAY_TYPE_XEMU);
     display_opengl = 1;
 
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "sdl2_display_early_init");
+#endif
+#ifdef __ANDROID__
+    // Avoid binding the display context on the QEMU thread.
+    return;
+#else
     SDL_GL_MakeCurrent(m_window, m_context);
     SDL_GL_SetSwapInterval(g_config.display.window.vsync ? 1 : 0);
     xemu_hud_init(m_window, m_context);
+#endif
     // blit = create_decal_shader(SHADER_TYPE_BLIT_GAMMA);
 }
 
@@ -848,7 +1183,12 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
     SDL_SysWMinfo info;
 
     assert(o->type == DISPLAY_TYPE_XEMU);
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "sdl2_display_init: begin");
+#else
     SDL_GL_MakeCurrent(m_window, m_context);
+#endif
 
     memset(&info, 0, sizeof(info));
     SDL_VERSION(&info.version);
@@ -912,8 +1252,15 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
     sdl_cursor_normal = SDL_GetCursor();
 
     /* Tell main thread to go ahead and create the app and enter the run loop */
+#ifndef __ANDROID__
     SDL_GL_MakeCurrent(NULL, NULL);
+#endif
     qemu_sem_post(&display_init_sem);
+
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "sdl2_display_init: posted display_init_sem");
+#endif
 }
 
 static QemuDisplay qemu_display_sdl2 = {
@@ -929,24 +1276,132 @@ static void register_sdl1(void)
 
 type_init(register_sdl1);
 
+#ifdef __ANDROID__
+void xemu_android_force_xemu_display_link(void)
+{
+}
+
+void xemu_android_display_preinit(void)
+{
+    static bool initialized = false;
+    if (initialized) {
+        return;
+    }
+    initialized = true;
+    sdl_render_thread_id = SDL_ThreadID();
+    sdl2_display_very_early_init(NULL);
+    if (SDL_GL_MakeCurrent(m_window, m_context) != 0) {
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                            "xemu_android_display_preinit: make current failed: %s",
+                            SDL_GetError());
+#endif
+    }
+#ifdef __ANDROID__
+    // Cache EGL state now while GL context is current on this thread
+    extern void glo_android_cache_current_egl_state(void);
+    glo_android_cache_current_egl_state();
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "xemu_android_display_preinit: cached EGL state");
+#endif
+    nv2a_android_early_context_init();
+    qemu_sem_init(&display_init_sem, 0);
+}
+
+void xemu_android_display_wait_ready(void)
+{
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "xemu_android_display_wait_ready: waiting");
+#endif
+    qemu_sem_wait(&display_init_sem);
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "xemu_android_display_wait_ready: ready");
+#endif
+}
+
+void xemu_android_display_loop(void)
+{
+    // Mirror the desktop main-loop rendering path.
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "xemu_android_display_loop: start");
+#endif
+    if (sdl_render_thread_id == 0) {
+        sdl_render_thread_id = SDL_ThreadID();
+    }
+    if (SDL_GL_GetCurrentContext() != m_context) {
+        if (SDL_GL_MakeCurrent(m_window, m_context) != 0) {
+#ifdef __ANDROID__
+            __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                                "xemu_android_display_loop: make current failed: %s",
+                                SDL_GetError());
+#endif
+            return;
+        }
+    }
+#ifdef __ANDROID__
+    SDL_GL_SetSwapInterval(g_config.display.window.vsync ? 1 : 0);
+    if (g_android_use_hud) {
+        xemu_hud_init(m_window, m_context);
+    }
+#endif
+    tcg_register_init_ctx();
+    qemu_set_current_aio_context(qemu_get_aio_context());
+    qemu_mutex_lock_main_loop();
+    bql_lock();
+    xemu_input_init();
+    bql_unlock();
+    qemu_mutex_unlock_main_loop();
+
+    while (1) {
+        if (g_android_should_quit || qemu_shutdown_requested_get() != SHUTDOWN_CAUSE_NONE) {
+            break;
+        }
+        if (g_android_paused || sdl2_console[0].hidden) {
+            qemu_mutex_lock_main_loop();
+            bql_lock();
+            sdl2_poll_events(&sdl2_console[0]);
+            bql_unlock();
+            qemu_mutex_unlock_main_loop();
+            SDL_Delay(16);
+            continue;
+        }
+        sdl2_gl_refresh(&sdl2_console[0].dcl);
+#ifdef __ANDROID__
+        if (!g_android_paused && SDL_GL_GetCurrentContext() != NULL) {
+            android_log_gl_error("loop-end");
+        }
+#else
+        assert(glGetError() == GL_NO_ERROR);
+#endif
+    }
+}
+#endif
+
 void xb_surface_gl_create_texture(DisplaySurface *surface)
 {
     assert(QEMU_IS_ALIGNED(surface_stride(surface), surface_bytes_per_pixel(surface)));
 
+    GLenum internal_format = GL_RGBA;
     switch (surface_format(surface)) {
     case PIXMAN_BE_b8g8r8x8:
     case PIXMAN_BE_b8g8r8a8:
         surface->glformat = GL_BGRA_EXT;
         surface->gltype = GL_UNSIGNED_BYTE;
+        internal_format = GL_RGBA;
         break;
     case PIXMAN_BE_x8r8g8b8:
     case PIXMAN_BE_a8r8g8b8:
         surface->glformat = GL_RGBA;
         surface->gltype = GL_UNSIGNED_BYTE;
+        internal_format = GL_RGBA;
         break;
     case PIXMAN_r5g6b5:
         surface->glformat = GL_RGB;
         surface->gltype = GL_UNSIGNED_SHORT_5_6_5;
+        internal_format = GL_RGB;
         break;
     default:
         g_assert_not_reached();
@@ -956,14 +1411,56 @@ void xb_surface_gl_create_texture(DisplaySurface *surface)
         glGenTextures(1, &surface->texture);
     }
     glBindTexture(GL_TEXTURE_2D, surface->texture);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT,
-                  surface_stride(surface) / surface_bytes_per_pixel(surface));
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
+    const void *pixels = surface_data(surface);
+#ifdef __ANDROID__
+    uint8_t *converted = NULL;
+    bool use_row_length = true;
+    if (surface->glformat == GL_BGRA_EXT) {
+        const int width = surface_width(surface);
+        const int height = surface_height(surface);
+        const int stride = surface_stride(surface);
+        const uint8_t *src = (const uint8_t *)surface_data(surface);
+        converted = g_malloc((size_t)width * height * 4);
+        for (int y = 0; y < height; ++y) {
+            const uint8_t *row = src + (size_t)y * stride;
+            uint8_t *dst = converted + (size_t)y * width * 4;
+            for (int x = 0; x < width; ++x) {
+                const uint8_t b = row[x * 4 + 0];
+                const uint8_t g = row[x * 4 + 1];
+                const uint8_t r = row[x * 4 + 2];
+                const uint8_t a = row[x * 4 + 3];
+                dst[x * 4 + 0] = r;
+                dst[x * 4 + 1] = g;
+                dst[x * 4 + 2] = b;
+                dst[x * 4 + 3] = a;
+            }
+        }
+        surface->glformat = GL_RGBA;
+        pixels = converted;
+        use_row_length = false;
+    }
+    if (use_row_length) {
+#endif
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT,
+                      surface_stride(surface) / surface_bytes_per_pixel(surface));
+#ifdef __ANDROID__
+    }
+#endif
+    glTexImage2D(GL_TEXTURE_2D, 0, internal_format,
                  surface_width(surface),
                  surface_height(surface),
                  0, surface->glformat, surface->gltype,
-                 surface_data(surface));
-    glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 0);
+                 pixels);
+#ifdef __ANDROID__
+    if (use_row_length) {
+#endif
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 0);
+#ifdef __ANDROID__
+    }
+    if (converted) {
+        g_free(converted);
+    }
+#endif
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -984,6 +1481,11 @@ void sdl2_gl_update(DisplayChangeListener *dcl,
     struct sdl2_console *scon = container_of(dcl, struct sdl2_console, dcl);
     assert(scon->opengl);
 
+#ifdef __ANDROID__
+    if (!sdl2_is_render_thread()) {
+        return;
+    }
+#endif
     SDL_GL_MakeCurrent(scon->real_window, scon->winctx);
 }
 
@@ -992,9 +1494,15 @@ void sdl2_gl_switch(DisplayChangeListener *dcl,
 {
     struct sdl2_console *scon = container_of(dcl, struct sdl2_console, dcl);
     assert(scon->opengl);
-    SDL_GL_MakeCurrent(scon->real_window, scon->winctx);
-    xb_surface_gl_destroy_texture(scon->surface);
+    DisplaySurface *old_surface = scon->surface;
     scon->surface = new_surface;
+#ifdef __ANDROID__
+    if (!sdl2_is_render_thread()) {
+        return;
+    }
+#endif
+    SDL_GL_MakeCurrent(scon->real_window, scon->winctx);
+    xb_surface_gl_destroy_texture(old_surface);
     if (!new_surface) {
         return;
     }
@@ -1027,8 +1535,76 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
     assert(scon->opengl);
     bool flip_required = false;
 
-    SDL_GL_MakeCurrent(scon->real_window, scon->winctx);
+#ifdef __ANDROID__
+    if (!sdl2_is_render_thread()) {
+        return;
+    }
+    if (g_android_paused || scon->hidden) {
+        if ((g_android_frame_counter++ % 120) == 0) {
+            __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                "refresh paused: hidden=%d paused=%d runstate=%d",
+                                scon->hidden ? 1 : 0,
+                                g_android_paused ? 1 : 0,
+                                (int)runstate_get());
+        }
+        qemu_mutex_lock_main_loop();
+        bql_lock();
+        sdl2_poll_events(scon);
+        bql_unlock();
+        qemu_mutex_unlock_main_loop();
+        SDL_Delay(16);
+        return;
+    }
+#endif
+    if (SDL_GL_MakeCurrent(scon->real_window, scon->winctx) != 0 ||
+        SDL_GL_GetCurrentContext() == NULL) {
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                            "sdl2_gl_refresh: make current failed: %s",
+                            SDL_GetError());
+        g_android_paused = true;
+#endif
+        qemu_mutex_lock_main_loop();
+        bql_lock();
+        sdl2_poll_events(scon);
+        bql_unlock();
+        qemu_mutex_unlock_main_loop();
+        SDL_Delay(16);
+        return;
+    }
+#ifdef __ANDROID__
+    android_log_gl_error("refresh-makecurrent");
+#endif
     update_fps();
+    g_android_frame_counter++;
+
+#ifdef __ANDROID__
+    static int force_cpu_blit_mode = -2; /* -2=uninit, -1=auto, 0=off, 1=on */
+    if (force_cpu_blit_mode == -2) {
+        const char *env = SDL_getenv("XEMU_ANDROID_FORCE_CPU_BLIT");
+        if (!env) {
+            force_cpu_blit_mode = -1;
+            __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                "refresh: CPU blit mode auto");
+        } else if (strcmp(env, "1") == 0 || strcmp(env, "true") == 0 ||
+                   strcmp(env, "TRUE") == 0) {
+            force_cpu_blit_mode = 1;
+            __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                "refresh: forcing CPU blit path");
+        } else {
+            force_cpu_blit_mode = 0;
+            __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                "refresh: CPU blit disabled via env");
+        }
+    }
+    bool force_cpu_blit = false;
+    if (force_cpu_blit_mode == -1) {
+        /* Vulkan path should prefer direct texture presentation on Android. */
+        force_cpu_blit = (g_config.display.renderer != CONFIG_DISPLAY_RENDERER_VULKAN);
+    } else {
+        force_cpu_blit = (force_cpu_blit_mode == 1);
+    }
+#endif
 
     /* XXX: Note that this bypasses the usual VGA path in order to quickly
      * get the surface. This is simple and fast, at the cost of accuracy.
@@ -1040,14 +1616,120 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
      * the guest code isn't using HW accelerated rendering, but just blitting
      * to the framebuffer, fall back to the VGA path.
      */
-    GLuint tex = nv2a_get_framebuffer_surface();
+    GLuint tex = 0;
+#ifdef __ANDROID__
+    if (force_cpu_blit) {
+        /* Trigger a render/sync so the readback buffer gets updated. */
+        (void)nv2a_get_framebuffer_surface();
+        nv2a_release_framebuffer_surface();
+
+        int rb_w = 0;
+        int rb_h = 0;
+        if (nv2a_android_copy_readback(&g_android_cpu_buf,
+                                       &g_android_cpu_buf_size,
+                                       &rb_w, &rb_h)) {
+            if ((g_android_frame_counter % 120) == 0) {
+                __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                    "refresh: using readback %dx%d", rb_w, rb_h);
+                if (g_android_cpu_buf && rb_w > 0 && rb_h > 0) {
+                    uint32_t tl = 0, mid = 0, br = 0;
+                    size_t tl_off = 0;
+                    size_t mid_off = ((size_t)(rb_h / 2) * (size_t)rb_w +
+                                      (size_t)(rb_w / 2)) * 4;
+                    size_t br_off = ((size_t)(rb_h - 1) * (size_t)rb_w +
+                                     (size_t)(rb_w - 1)) * 4;
+                    if (mid_off + 4 <= g_android_cpu_buf_size) {
+                        memcpy(&mid, g_android_cpu_buf + mid_off, sizeof(mid));
+                    }
+                    if (br_off + 4 <= g_android_cpu_buf_size) {
+                        memcpy(&br, g_android_cpu_buf + br_off, sizeof(br));
+                    }
+                    if (tl_off + 4 <= g_android_cpu_buf_size) {
+                        memcpy(&tl, g_android_cpu_buf + tl_off, sizeof(tl));
+                    }
+                    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                        "readback sample tl=%08x mid=%08x br=%08x",
+                                        tl, mid, br);
+                }
+            }
+            if (!g_android_cpu_tex) {
+                glGenTextures(1, &g_android_cpu_tex);
+            }
+            glBindTexture(GL_TEXTURE_2D, g_android_cpu_tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            if (rb_w != g_android_cpu_tex_w || rb_h != g_android_cpu_tex_h) {
+                g_android_cpu_tex_w = rb_w;
+                g_android_cpu_tex_h = rb_h;
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rb_w, rb_h, 0,
+                             GL_RGBA, GL_UNSIGNED_BYTE, g_android_cpu_buf);
+            } else {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, rb_w, rb_h,
+                                GL_RGBA, GL_UNSIGNED_BYTE, g_android_cpu_buf);
+            }
+            tex = g_android_cpu_tex;
+            flip_required = true;
+        } else if ((g_android_frame_counter % 120) == 0) {
+            __android_log_print(ANDROID_LOG_WARN, "xemu-android",
+                                "refresh: no readback available yet");
+        }
+        if ((g_android_frame_counter % 120) == 0) {
+            __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                "refresh: force CPU blit path");
+        }
+    } else {
+        tex = nv2a_get_framebuffer_surface();
+        if (tex != 0 && glIsTexture(tex) == GL_FALSE) {
+            if ((g_android_frame_counter % 120) == 0) {
+                __android_log_print(ANDROID_LOG_WARN, "xemu-android",
+                                    "refresh: nv2a tex %u not valid in display context",
+                                    (unsigned)tex);
+            }
+            tex = 0;
+        }
+    }
+#else
+    tex = nv2a_get_framebuffer_surface();
+#endif
+#ifdef __ANDROID__
+    android_log_gl_error("refresh-get-fb");
+    if ((g_android_frame_counter % 120) == 0) {
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "refresh frame=%llu tex=%u flip=%d surface=%p size=%dx%d runstate=%d",
+                            (unsigned long long)g_android_frame_counter,
+                            (unsigned)tex,
+                            flip_required ? 1 : 0,
+                            (void *)scon->surface,
+                            scon->surface ? surface_width(scon->surface) : 0,
+                            scon->surface ? surface_height(scon->surface) : 0,
+                            (int)runstate_get());
+    }
+#endif
     if (tex == 0) {
+#ifdef __ANDROID__
+        // Ensure the software VGA path updates the surface before uploading.
+        qemu_mutex_lock_main_loop();
+        bql_lock();
+        graphic_hw_update(scon->dcl.con);
+        bql_unlock();
+        qemu_mutex_unlock_main_loop();
+#endif
         // FIXME: Don't upload if notdirty
         xb_surface_gl_create_texture(scon->surface);
         scon->updates++;
         tex = scon->surface->texture;
         flip_required = true;
+#ifdef __ANDROID__
+        if ((g_android_frame_counter % 120) == 0) {
+            __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                "refresh no nv2a fb, using surface texture=%u",
+                                (unsigned)tex);
+        }
+#endif
     }
+#ifdef __ANDROID__
+    android_log_gl_error("refresh-create-texture");
+#endif
 
     /* FIXME: Finer locking. Event handlers in segments of the code expect
      * to be running on the main thread with the BQL. For now, acquire the
@@ -1060,9 +1742,17 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
 
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
+#ifdef __ANDROID__
+    android_blit_frame(tex, flip_required);
+#else
+#endif
+#ifdef __ANDROID__
+    android_log_gl_error("refresh-blit");
+#else
     xemu_snapshots_set_framebuffer_texture(tex, flip_required);
     xemu_hud_set_framebuffer_texture(tex, flip_required);
     xemu_hud_render();
+#endif
 
     // Release BQL before swapping (which may sleep if swap interval is not immediate)
     bql_unlock();
@@ -1070,7 +1760,13 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
 
     glFinish();
     nv2a_release_framebuffer_surface();
+#ifdef __ANDROID__
+    android_log_gl_error("refresh-finish");
+#endif
     SDL_GL_SwapWindow(scon->real_window);
+#ifdef __ANDROID__
+    android_log_gl_error("refresh-swap");
+#endif
 
     /* VGA update (see note above) + vblank */
     qemu_mutex_lock_main_loop();
@@ -1193,6 +1889,11 @@ int sdl2_gl_make_context_current(DisplayChangeListener *dcl,
 
     assert(scon->opengl);
 
+#ifdef __ANDROID__
+    if (!sdl2_is_render_thread()) {
+        return 0;
+    }
+#endif
     return SDL_GL_MakeCurrent(scon->real_window, sdlctx);
 }
 
@@ -1313,6 +2014,7 @@ static void setup_nvidia_profile(void)
 }
 #endif
 
+#ifndef __ANDROID__
 int main(int argc, char **argv)
 {
     QemuThread thread;
@@ -1417,6 +2119,7 @@ int main(int argc, char **argv)
 
     // rcu_unregister_thread();
 }
+#endif
 
 void xemu_eject_disc(Error **errp)
 {

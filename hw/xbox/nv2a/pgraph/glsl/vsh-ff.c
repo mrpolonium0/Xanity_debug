@@ -497,10 +497,10 @@ GLSL_DEFINE(materialEmissionColor, GLSL_LTCTXA(NV_IGRAPH_XF_LTCTXA_CM_COL) ".xyz
             "  float ptMaxSize = min(pointParams[3] + ptMinSize, 63.875);\n"
             "  oPts.x = 1/sqrt(pointParams[0] + pointParams[1] * d_e + pointParams[2] * d_e * d_e) + pointParams[6];\n");
         mstring_append_fmt(body,
-                           "  oPts.x = clamp(oPts.x * pointParams[3] + pointParams[7], ptMinSize, ptMaxSize) * %d;\n",
+                           "  oPts.x = clamp(oPts.x * pointParams[3] + pointParams[7], ptMinSize, ptMaxSize) * float(%d);\n",
                            state->surface_scale_factor);
     } else {
-        mstring_append_fmt(body, "  oPts.x = %f * %d;\n",
+        mstring_append_fmt(body, "  oPts.x = %f * float(%d);\n",
                            MAX(1.f, state->point_size),
                            state->surface_scale_factor);
     }

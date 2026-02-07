@@ -21,4 +21,9 @@
   <string name="setup_hdd_body">Choose your Xbox hard disk image.</string>
   <string name="setup_pick_hdd">Choose Hard Disk</string>
   <string name="setup_hdd_value">Hard Disk: %1$s</string>
+
+  <string name="setup_disc_title">Game Disc (Optional)</string>
+  <string name="setup_disc_body">Choose an Xbox game disc image to boot.</string>
+  <string name="setup_pick_disc">Choose Game Disc</string>
+  <string name="setup_disc_value">Game Disc: %1$s</string>
 </resources>

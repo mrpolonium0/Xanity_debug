@@ -41,7 +41,7 @@
 #include "constants.h"
 #include "glsl.h"
 
-#define HAVE_EXTERNAL_MEMORY 1
+#define HAVE_EXTERNAL_MEMORY 0
 
 typedef struct QueueFamilyIndices {
     int queue_family;
@@ -541,6 +541,7 @@ void pgraph_vk_unpack_depth_stencil(PGRAPHState *pg, SurfaceBinding *surface,
 void pgraph_vk_init_display(PGRAPHState *pg);
 void pgraph_vk_finalize_display(PGRAPHState *pg);
 void pgraph_vk_render_display(PGRAPHState *pg);
+bool pgraph_vk_gl_external_memory_available(void);
 
 // texture.c
 void pgraph_vk_init_textures(PGRAPHState *pg);

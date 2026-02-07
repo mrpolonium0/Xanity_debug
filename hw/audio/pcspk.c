@@ -253,3 +253,9 @@ static void pcspk_register(void)
     type_register_static(&pcspk_info);
 }
 type_init(pcspk_register)
+
+#ifdef __ANDROID__
+void xemu_android_force_pcspk_link(void)
+{
+}
+#endif

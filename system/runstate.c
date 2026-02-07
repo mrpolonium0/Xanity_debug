@@ -945,6 +945,12 @@ void qemu_init_subsystems(void)
     atexit(qemu_run_exit_notifiers);
 
     module_call_init(MODULE_INIT_QOM);
+
+#ifdef __ANDROID__
+    /* Register any Android-specific fallback QOM interfaces after QOM init. */
+    extern void xemu_android_register_vmstate_if(void);
+    xemu_android_register_vmstate_if();
+#endif
     module_call_init(MODULE_INIT_MIGRATION);
 
     runstate_init();

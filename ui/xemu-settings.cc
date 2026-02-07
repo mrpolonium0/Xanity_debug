@@ -34,6 +34,10 @@
 #include "xemu-controllers.h"
 #include "xemu-settings.h"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
 #define DEFINE_CONFIG_TREE
 #include "xemu-config.h"
 
@@ -173,7 +177,30 @@ bool xemu_settings_load(void)
                 setlocale(LC_NUMERIC, "C");
 
                 try {
-                    config_tree.update_from_table(toml::parse(buf));
+                    toml::table tbl = toml::parse(buf);
+                    config_tree.update_from_table(tbl);
+#ifdef __ANDROID__
+                    if (auto android_tbl = tbl["android"].as_table()) {
+                        if (auto v = android_tbl->get("force_cpu_blit"); v && v->is_boolean()) {
+                            if (v->value<bool>().value_or(false)) {
+                                setenv("XEMU_ANDROID_FORCE_CPU_BLIT", "1", 1);
+                                __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                                    "Config android.force_cpu_blit=1");
+                            } else {
+                                setenv("XEMU_ANDROID_FORCE_CPU_BLIT", "0", 1);
+                                __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                                    "Config android.force_cpu_blit=0");
+                            }
+                        }
+                        if (auto v = android_tbl->get("egl_offscreen"); v && v->is_boolean()) {
+                            if (!v->value<bool>().value_or(true)) {
+                                setenv("XEMU_ANDROID_EGL_OFFSCREEN", "0", 1);
+                                __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                                    "Config android.egl_offscreen=0");
+                            }
+                        }
+                    }
+#endif
                     success = true;
                 } catch (const toml::parse_error& err) {
                    std::ostringstream oss;

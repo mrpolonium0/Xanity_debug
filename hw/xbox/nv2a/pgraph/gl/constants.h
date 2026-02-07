@@ -26,6 +26,20 @@
 #include "hw/xbox/nv2a/nv2a_regs.h"
 #include "gloffscreen.h"
 
+#ifdef __ANDROID__
+#define NV2A_GL_UNSIGNED_INT_8_8_8_8 GL_UNSIGNED_BYTE
+#define NV2A_GL_UNSIGNED_INT_8_8_8_8_REV GL_UNSIGNED_BYTE
+#define NV2A_GL_Z16_INTERNAL GL_DEPTH_COMPONENT16
+#define NV2A_GL_Z16_TYPE GL_UNSIGNED_SHORT
+#define NV2A_GL_Z16_FLOAT_TYPE GL_UNSIGNED_SHORT
+#else
+#define NV2A_GL_UNSIGNED_INT_8_8_8_8 GL_UNSIGNED_INT_8_8_8_8
+#define NV2A_GL_UNSIGNED_INT_8_8_8_8_REV GL_UNSIGNED_INT_8_8_8_8_REV
+#define NV2A_GL_Z16_INTERNAL GL_DEPTH_COMPONENT32F
+#define NV2A_GL_Z16_TYPE GL_HALF_FLOAT
+#define NV2A_GL_Z16_FLOAT_TYPE GL_HALF_FLOAT
+#endif
+
 static const GLenum pgraph_texture_min_filter_gl_map[] = {
     0,
     GL_NEAREST,
@@ -171,13 +185,13 @@ static const ColorFormatInfo kelvin_color_format_gl_map[66] = {
     [NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R5G6B5] =
         {2, false, GL_RGB565, GL_RGB, GL_UNSIGNED_SHORT_5_6_5},
     [NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8R8G8B8] =
-        {4, false, GL_RGBA8, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV},
+        {4, false, GL_RGBA8, GL_BGRA, NV2A_GL_UNSIGNED_INT_8_8_8_8_REV},
     [NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X8R8G8B8] =
-        {4, false, GL_RGB8, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV},
+        {4, false, GL_RGB8, GL_BGRA, NV2A_GL_UNSIGNED_INT_8_8_8_8_REV},
 
     /* paletted texture */
     [NV097_SET_TEXTURE_FORMAT_COLOR_SZ_I8_A8R8G8B8] =
-        {1, false, GL_RGBA8, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV},
+        {1, false, GL_RGBA8, GL_BGRA, NV2A_GL_UNSIGNED_INT_8_8_8_8_REV},
 
     [NV097_SET_TEXTURE_FORMAT_COLOR_L_DXT1_A1R5G5B5] =
         {4, false, GL_COMPRESSED_RGBA_S3TC_DXT1_EXT, 0, GL_RGBA},
@@ -190,7 +204,7 @@ static const ColorFormatInfo kelvin_color_format_gl_map[66] = {
     [NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_R5G6B5] =
         {2, true, GL_RGB565, GL_RGB, GL_UNSIGNED_SHORT_5_6_5},
     [NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8R8G8B8] =
-        {4, true, GL_RGBA8, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV},
+        {4, true, GL_RGBA8, GL_BGRA, NV2A_GL_UNSIGNED_INT_8_8_8_8_REV},
     [NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_Y8] =
         {1, true, GL_R8, GL_RED, GL_UNSIGNED_BYTE,
          {GL_RED, GL_RED, GL_RED, GL_ONE}},
@@ -213,7 +227,7 @@ static const ColorFormatInfo kelvin_color_format_gl_map[66] = {
     [NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A4R4G4B4] =
         {2, true, GL_RGBA4, GL_BGRA, GL_UNSIGNED_SHORT_4_4_4_4_REV},
     [NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X8R8G8B8] =
-        {4, true, GL_RGB8, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV},
+        {4, true, GL_RGB8, GL_BGRA, NV2A_GL_UNSIGNED_INT_8_8_8_8_REV},
     [NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8] =
         {1, true, GL_R8, GL_RED, GL_UNSIGNED_BYTE,
          {GL_ONE, GL_ONE, GL_ONE, GL_RED}},
@@ -231,9 +245,9 @@ static const ColorFormatInfo kelvin_color_format_gl_map[66] = {
          {GL_GREEN, GL_RED, GL_RED, GL_GREEN}},
 
     [NV097_SET_TEXTURE_FORMAT_COLOR_LC_IMAGE_CR8YB8CB8YA8] =
-        {2, true, GL_RGBA8,  GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV},
+        {2, true, GL_RGBA8,  GL_RGBA, NV2A_GL_UNSIGNED_INT_8_8_8_8_REV},
     [NV097_SET_TEXTURE_FORMAT_COLOR_LC_IMAGE_YB8CR8YA8CB8] =
-        {2, true, GL_RGBA8,  GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV},
+        {2, true, GL_RGBA8,  GL_RGBA, NV2A_GL_UNSIGNED_INT_8_8_8_8_REV},
 
     /* Additional information is passed to the pixel shader via the swizzle:
      * RED: The depth value.
@@ -254,26 +268,26 @@ static const ColorFormatInfo kelvin_color_format_gl_map[66] = {
         {2, true, GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT,
          {GL_RED, GL_ZERO, GL_ZERO, GL_ZERO}, true},
     [NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_DEPTH_Y16_FLOAT] =
-        {2, true, GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT, GL_HALF_FLOAT,
+        {2, true, GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT, NV2A_GL_Z16_FLOAT_TYPE,
           {GL_RED, GL_ZERO, GL_ONE, GL_ZERO}, true},
 
     [NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_Y16] =
         {2, true, GL_R16, GL_RED, GL_UNSIGNED_SHORT,
          {GL_RED, GL_RED, GL_RED, GL_ONE}},
     [NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8B8G8R8] =
-        {4, false, GL_RGBA8, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV},
+        {4, false, GL_RGBA8, GL_RGBA, NV2A_GL_UNSIGNED_INT_8_8_8_8_REV},
     [NV097_SET_TEXTURE_FORMAT_COLOR_SZ_B8G8R8A8] =
-        {4, false, GL_RGBA8, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8},
+        {4, false, GL_RGBA8, GL_BGRA, NV2A_GL_UNSIGNED_INT_8_8_8_8},
 
     [NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R8G8B8A8] =
-        {4, false, GL_RGBA8, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8},
+        {4, false, GL_RGBA8, GL_RGBA, NV2A_GL_UNSIGNED_INT_8_8_8_8},
 
     [NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8B8G8R8] =
-        {4, true, GL_RGBA8, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV},
+        {4, true, GL_RGBA8, GL_RGBA, NV2A_GL_UNSIGNED_INT_8_8_8_8_REV},
     [NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_B8G8R8A8] =
-        {4, true, GL_RGBA8, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8},
+        {4, true, GL_RGBA8, GL_BGRA, NV2A_GL_UNSIGNED_INT_8_8_8_8},
     [NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_R8G8B8A8] =
-        {4, true, GL_RGBA8, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8}
+        {4, true, GL_RGBA8, GL_RGBA, NV2A_GL_UNSIGNED_INT_8_8_8_8}
 };
 
 typedef struct SurfaceFormatInfo {
@@ -290,9 +304,9 @@ static const SurfaceFormatInfo kelvin_surface_color_format_gl_map[] = {
     [NV097_SET_SURFACE_FORMAT_COLOR_LE_R5G6B5] =
         {2, GL_RGB565, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, GL_COLOR_ATTACHMENT0},
     [NV097_SET_SURFACE_FORMAT_COLOR_LE_X8R8G8B8_Z8R8G8B8] =
-        {4, GL_RGBA8, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, GL_COLOR_ATTACHMENT0},
+        {4, GL_RGBA8, GL_BGRA, NV2A_GL_UNSIGNED_INT_8_8_8_8_REV, GL_COLOR_ATTACHMENT0},
     [NV097_SET_SURFACE_FORMAT_COLOR_LE_A8R8G8B8] =
-        {4, GL_RGBA8, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, GL_COLOR_ATTACHMENT0},
+        {4, GL_RGBA8, GL_BGRA, NV2A_GL_UNSIGNED_INT_8_8_8_8_REV, GL_COLOR_ATTACHMENT0},
 
     // FIXME: Map channel color
     [NV097_SET_SURFACE_FORMAT_COLOR_LE_B8] =
@@ -303,7 +317,7 @@ static const SurfaceFormatInfo kelvin_surface_color_format_gl_map[] = {
 
 static const SurfaceFormatInfo kelvin_surface_zeta_float_format_gl_map[] = {
     [NV097_SET_SURFACE_FORMAT_ZETA_Z16] =
-        {2, GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_HALF_FLOAT, GL_DEPTH_ATTACHMENT},
+        {2, NV2A_GL_Z16_INTERNAL, GL_DEPTH_COMPONENT, NV2A_GL_Z16_TYPE, GL_DEPTH_ATTACHMENT},
     [NV097_SET_SURFACE_FORMAT_ZETA_Z24S8] =
         /* FIXME: GL does not support packing floating-point Z24S8 OOTB, so for
          *        now just emulate this with fixed-point Z24S8. Possible compat
@@ -320,3 +334,5 @@ static const SurfaceFormatInfo kelvin_surface_zeta_fixed_format_gl_map[] = {
 };
 
 #endif
+
+

@@ -496,3 +496,9 @@ static void register_audio_sdl(void)
     audio_driver_register(&sdl_audio_driver);
 }
 type_init(register_audio_sdl);
+
+#ifdef __ANDROID__
+void xemu_android_force_sdlaudio_link(void)
+{
+}
+#endif

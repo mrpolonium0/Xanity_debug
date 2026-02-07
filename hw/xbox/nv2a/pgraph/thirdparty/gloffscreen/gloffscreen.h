@@ -45,6 +45,14 @@ bool glo_check_extension(const char* ext_name);
 /* Create an OpenGL context */
 GloContext *glo_context_create(void);
 
+/* Wrap the current OpenGL context without creating a new one */
+GloContext *glo_context_wrap_current(void);
+
+#ifdef __ANDROID__
+/* Cache EGL state from the currently bound SDL/EGL context. */
+void glo_android_cache_current_egl_state(void);
+#endif
+
 /* Destroy a previously created OpenGL context */
 void glo_context_destroy(GloContext *context);
 

@@ -7,7 +7,7 @@
     android:theme="@style/Theme.Xemu">
 
     <activity
-      android:name=".MainActivity"
+      android:name=".LauncherActivity"
       android:screenOrientation="fullSensor"
       android:exported="true">
 
@@ -15,6 +15,15 @@
         <action android:name="android.intent.action.MAIN" />
         <category android:name="android.intent.category.LAUNCHER" />
       </intent-filter>
+    </activity>
+
+    <activity
+      android:name=".MainActivity"
+      android:screenOrientation="sensorLandscape"
+      android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
+      android:hardwareAccelerated="true"
+      android:process=":xemu"
+      android:exported="false">
 
       <meta-data
         android:name="SDL_MAIN_LIBRARY"

@@ -18,7 +18,55 @@
  */
 
 #include "renderer.h"
+#include <EGL/egl.h>
 #include <math.h>
+
+#if HAVE_EXTERNAL_MEMORY
+static PFNGLDELETEMEMORYOBJECTSEXTPROC p_glDeleteMemoryObjectsEXT;
+static PFNGLISMEMORYOBJECTEXTPROC p_glIsMemoryObjectEXT;
+static PFNGLCREATEMEMORYOBJECTSEXTPROC p_glCreateMemoryObjectsEXT;
+static PFNGLIMPORTMEMORYFDEXTPROC p_glImportMemoryFdEXT;
+static PFNGLTEXSTORAGEMEM2DEXTPROC p_glTexStorageMem2DEXT;
+
+static bool gl_external_memory_loaded;
+static bool gl_external_memory_available;
+
+static bool load_gl_external_memory_symbols(void)
+{
+    if (gl_external_memory_loaded) {
+        return gl_external_memory_available;
+    }
+    gl_external_memory_loaded = true;
+
+    p_glDeleteMemoryObjectsEXT =
+        (PFNGLDELETEMEMORYOBJECTSEXTPROC)eglGetProcAddress(
+            "glDeleteMemoryObjectsEXT");
+    p_glIsMemoryObjectEXT =
+        (PFNGLISMEMORYOBJECTEXTPROC)eglGetProcAddress(
+            "glIsMemoryObjectEXT");
+    p_glCreateMemoryObjectsEXT =
+        (PFNGLCREATEMEMORYOBJECTSEXTPROC)eglGetProcAddress(
+            "glCreateMemoryObjectsEXT");
+    p_glImportMemoryFdEXT =
+        (PFNGLIMPORTMEMORYFDEXTPROC)eglGetProcAddress(
+            "glImportMemoryFdEXT");
+    p_glTexStorageMem2DEXT =
+        (PFNGLTEXSTORAGEMEM2DEXTPROC)eglGetProcAddress(
+            "glTexStorageMem2DEXT");
+
+    gl_external_memory_available = p_glDeleteMemoryObjectsEXT &&
+                                   p_glIsMemoryObjectEXT &&
+                                   p_glCreateMemoryObjectsEXT &&
+                                   p_glImportMemoryFdEXT &&
+                                   p_glTexStorageMem2DEXT;
+    return gl_external_memory_available;
+}
+
+bool pgraph_vk_gl_external_memory_available(void)
+{
+    return load_gl_external_memory_symbols();
+}
+#endif
 
 static uint8_t *convert_texture_data__CR8YB8CB8YA8(uint8_t *data_out,
                                                    const uint8_t *data_in,
@@ -542,10 +590,14 @@ static void destroy_current_display_image(PGRAPHState *pg)
     destroy_frame_buffer(pg);
 
 #if HAVE_EXTERNAL_MEMORY
-    glDeleteTextures(1, &d->gl_texture_id);
+    if (p_glDeleteMemoryObjectsEXT) {
+        glDeleteTextures(1, &d->gl_texture_id);
+    }
     d->gl_texture_id = 0;
 
-    glDeleteMemoryObjectsEXT(1, &d->gl_memory_obj);
+    if (p_glDeleteMemoryObjectsEXT) {
+        p_glDeleteMemoryObjectsEXT(1, &d->gl_memory_obj);
+    }
     d->gl_memory_obj = 0;
 
 #ifdef WIN32
@@ -569,7 +621,7 @@ static void destroy_current_display_image(PGRAPHState *pg)
 // FIXME: We may need to use two images. One for actually rendering display,
 // and another for GL in the correct tiling mode
 
-static void create_display_image(PGRAPHState *pg, int width, int height)
+static bool create_display_image(PGRAPHState *pg, int width, int height)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
     PGRAPHVkDisplayState *d = &r->display;
@@ -600,6 +652,12 @@ static void create_display_image(PGRAPHState *pg, int width, int height)
     }
 #endif
 
+    d->gl_texture_id = 0;
+    d->gl_memory_obj = 0;
+#ifndef WIN32
+    d->fd = -1;
+#endif
+
     // Create image
     VkImageCreateInfo image_create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -627,18 +685,48 @@ static void create_display_image(PGRAPHState *pg, int width, int height)
     };
     image_create_info.pNext = &external_memory_image_create_info;
 
-    VK_CHECK(vkCreateImage(r->device, &image_create_info, NULL, &d->image));
+    VkResult result = vkCreateImage(r->device, &image_create_info, NULL, &d->image);
+    if (result != VK_SUCCESS) {
+        fprintf(stderr, "create_display_image: vkCreateImage failed (%d)\n", result);
+        d->image = VK_NULL_HANDLE;
+        return false;
+    }
 
     // Allocate and bind image memory
-    VkMemoryRequirements memory_requirements;
-    vkGetImageMemoryRequirements(r->device, d->image, &memory_requirements);
+    VkMemoryDedicatedRequirements dedicated_requirements = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS,
+    };
+    VkMemoryRequirements2 memory_requirements2 = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+        .pNext = &dedicated_requirements,
+    };
+    VkImageMemoryRequirementsInfo2 image_memory_requirements_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+        .image = d->image,
+    };
+    vkGetImageMemoryRequirements2(r->device, &image_memory_requirements_info,
+                                  &memory_requirements2);
+    VkMemoryRequirements memory_requirements = memory_requirements2.memoryRequirements;
+
+    uint32_t memory_type_index =
+        pgraph_vk_get_memory_type(pg, memory_requirements.memoryTypeBits,
+                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (memory_type_index == 0xFFFFFFFF) {
+        memory_type_index =
+            pgraph_vk_get_memory_type(pg, memory_requirements.memoryTypeBits, 0);
+    }
+    if (memory_type_index == 0xFFFFFFFF) {
+        fprintf(stderr, "create_display_image: no compatible memory type bits=0x%x\n",
+                memory_requirements.memoryTypeBits);
+        vkDestroyImage(r->device, d->image, NULL);
+        d->image = VK_NULL_HANDLE;
+        return false;
+    }
 
     VkMemoryAllocateInfo alloc_info = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = memory_requirements.size,
-        .memoryTypeIndex =
-            pgraph_vk_get_memory_type(pg, memory_requirements.memoryTypeBits,
-                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+        .memoryTypeIndex = memory_type_index,
     };
 
     VkExportMemoryAllocateInfo export_memory_alloc_info = {
@@ -651,10 +739,37 @@ static void create_display_image(PGRAPHState *pg, int width, int height)
 #endif
             ,
     };
-    alloc_info.pNext = &export_memory_alloc_info;
+    void *alloc_p_next = &export_memory_alloc_info;
+    VkMemoryDedicatedAllocateInfo dedicated_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+        .image = d->image,
+    };
+    if (dedicated_requirements.requiresDedicatedAllocation == VK_TRUE) {
+        dedicated_alloc_info.pNext = alloc_p_next;
+        alloc_p_next = &dedicated_alloc_info;
+    }
+    alloc_info.pNext = alloc_p_next;
 
-    VK_CHECK(vkAllocateMemory(r->device, &alloc_info, NULL, &d->memory));
-    VK_CHECK(vkBindImageMemory(r->device, d->image, d->memory, 0));
+    result = vkAllocateMemory(r->device, &alloc_info, NULL, &d->memory);
+    if (result != VK_SUCCESS) {
+        fprintf(stderr, "create_display_image: vkAllocateMemory failed (%d) size=%llu type=%u dedicated=%d\n",
+                result, (unsigned long long)alloc_info.allocationSize,
+                alloc_info.memoryTypeIndex,
+                dedicated_requirements.requiresDedicatedAllocation == VK_TRUE ? 1 : 0);
+        vkDestroyImage(r->device, d->image, NULL);
+        d->image = VK_NULL_HANDLE;
+        d->memory = VK_NULL_HANDLE;
+        return false;
+    }
+    result = vkBindImageMemory(r->device, d->image, d->memory, 0);
+    if (result != VK_SUCCESS) {
+        fprintf(stderr, "create_display_image: vkBindImageMemory failed (%d)\n", result);
+        vkFreeMemory(r->device, d->memory, NULL);
+        d->memory = VK_NULL_HANDLE;
+        vkDestroyImage(r->device, d->image, NULL);
+        d->image = VK_NULL_HANDLE;
+        return false;
+    }
 
     // Create Image View
     VkImageViewCreateInfo image_view_create_info = {
@@ -666,10 +781,28 @@ static void create_display_image(PGRAPHState *pg, int width, int height)
         .subresourceRange.levelCount = 1,
         .subresourceRange.layerCount = 1,
     };
-    VK_CHECK(vkCreateImageView(r->device, &image_view_create_info, NULL,
-                               &d->image_view));
+    result = vkCreateImageView(r->device, &image_view_create_info, NULL,
+                               &d->image_view);
+    if (result != VK_SUCCESS) {
+        fprintf(stderr, "create_display_image: vkCreateImageView failed (%d)\n", result);
+        vkFreeMemory(r->device, d->memory, NULL);
+        d->memory = VK_NULL_HANDLE;
+        vkDestroyImage(r->device, d->image, NULL);
+        d->image = VK_NULL_HANDLE;
+        return false;
+    }
 
 #if HAVE_EXTERNAL_MEMORY
+    if (!load_gl_external_memory_symbols()) {
+        fprintf(stderr, "Vulkan display: GL_EXT_memory_object not available\n");
+        vkDestroyImageView(r->device, d->image_view, NULL);
+        d->image_view = VK_NULL_HANDLE;
+        vkFreeMemory(r->device, d->memory, NULL);
+        d->memory = VK_NULL_HANDLE;
+        vkDestroyImage(r->device, d->image, NULL);
+        d->image = VK_NULL_HANDLE;
+        return false;
+    }
 
 #ifdef WIN32
 
@@ -680,7 +813,7 @@ static void create_display_image(PGRAPHState *pg, int width, int height)
     };
     VK_CHECK(vkGetMemoryWin32HandleKHR(r->device, &handle_info, &d->handle));
 
-    glCreateMemoryObjectsEXT(1, &d->gl_memory_obj);
+    p_glCreateMemoryObjectsEXT(1, &d->gl_memory_obj);
     glImportMemoryWin32HandleEXT(d->gl_memory_obj, memory_requirements.size, GL_HANDLE_TYPE_OPAQUE_WIN32_EXT, d->handle);
     assert(glGetError() == GL_NO_ERROR);
 
@@ -691,13 +824,31 @@ static void create_display_image(PGRAPHState *pg, int width, int height)
         .memory = d->memory,
         .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
     };
-    VK_CHECK(vkGetMemoryFdKHR(r->device, &fd_info, &d->fd));
+    result = vkGetMemoryFdKHR(r->device, &fd_info, &d->fd);
+    if (result != VK_SUCCESS) {
+        fprintf(stderr, "create_display_image: vkGetMemoryFdKHR failed (%d)\n", result);
+        vkDestroyImageView(r->device, d->image_view, NULL);
+        d->image_view = VK_NULL_HANDLE;
+        vkFreeMemory(r->device, d->memory, NULL);
+        d->memory = VK_NULL_HANDLE;
+        vkDestroyImage(r->device, d->image, NULL);
+        d->image = VK_NULL_HANDLE;
+        return false;
+    }
 
-    glCreateMemoryObjectsEXT(1, &d->gl_memory_obj);
-    glImportMemoryFdEXT(d->gl_memory_obj, memory_requirements.size,
-                        GL_HANDLE_TYPE_OPAQUE_FD_EXT, d->fd);
-    assert(glIsMemoryObjectEXT(d->gl_memory_obj));
-    assert(glGetError() == GL_NO_ERROR);
+    p_glCreateMemoryObjectsEXT(1, &d->gl_memory_obj);
+    p_glImportMemoryFdEXT(d->gl_memory_obj, memory_requirements.size,
+                          GL_HANDLE_TYPE_OPAQUE_FD_EXT, d->fd);
+    if (!p_glIsMemoryObjectEXT(d->gl_memory_obj) || glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "create_display_image: GL memory object import failed\n");
+        vkDestroyImageView(r->device, d->image_view, NULL);
+        d->image_view = VK_NULL_HANDLE;
+        vkFreeMemory(r->device, d->memory, NULL);
+        d->memory = VK_NULL_HANDLE;
+        vkDestroyImage(r->device, d->image, NULL);
+        d->image = VK_NULL_HANDLE;
+        return false;
+    }
 
 #endif // WIN32
 
@@ -708,10 +859,19 @@ static void create_display_image(PGRAPHState *pg, int width, int height)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_TILING_EXT,
                     use_optimal_tiling ? GL_OPTIMAL_TILING_EXT :
                                          GL_LINEAR_TILING_EXT);
-    glTexStorageMem2DEXT(GL_TEXTURE_2D, 1, gl_internal_format,
-                         image_create_info.extent.width,
-                         image_create_info.extent.height, d->gl_memory_obj, 0);
-    assert(glGetError() == GL_NO_ERROR);
+    p_glTexStorageMem2DEXT(GL_TEXTURE_2D, 1, gl_internal_format,
+                           image_create_info.extent.width,
+                           image_create_info.extent.height, d->gl_memory_obj, 0);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "create_display_image: glTexStorageMem2DEXT failed\n");
+        vkDestroyImageView(r->device, d->image_view, NULL);
+        d->image_view = VK_NULL_HANDLE;
+        vkFreeMemory(r->device, d->memory, NULL);
+        d->memory = VK_NULL_HANDLE;
+        vkDestroyImage(r->device, d->image, NULL);
+        d->image = VK_NULL_HANDLE;
+        return false;
+    }
 
 #endif // HAVE_EXTERNAL_MEMORY
 
@@ -719,6 +879,7 @@ static void create_display_image(PGRAPHState *pg, int width, int height)
     d->height = image_create_info.extent.height;
 
     create_frame_buffer(pg);
+    return true;
 }
 
 static void update_descriptor_set(PGRAPHState *pg, SurfaceBinding *surface)
@@ -900,6 +1061,9 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
     NV2AState *d = container_of(pg, NV2AState, pgraph);
     PGRAPHVkState *r = pg->vk_renderer_state;
     PGRAPHVkDisplayState *disp = &r->display;
+    if (disp->image == VK_NULL_HANDLE || disp->framebuffer == VK_NULL_HANDLE) {
+        return;
+    }
 
     if (r->in_command_buffer &&
         surface->draw_time >= r->command_buffer_start_time) {
@@ -1086,7 +1250,9 @@ void pgraph_vk_render_display(PGRAPHState *pg)
 
     PGRAPHVkDisplayState *disp = &r->display;
     if (!disp->image || disp->width != width || disp->height != height) {
-        create_display_image(pg, width, height);
+        if (!create_display_image(pg, width, height)) {
+            return;
+        }
     }
 
     render_display(pg, surface);

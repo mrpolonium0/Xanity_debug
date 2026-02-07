@@ -39,6 +39,11 @@ android {
 
     externalNativeBuild {
       cmake {
+        arguments += listOf(
+          "-DXEMU_ANDROID_BUILD_ID=3",
+          "-DCMAKE_C_FLAGS_DEBUG=-g0",
+          "-DCMAKE_CXX_FLAGS_DEBUG=-g0"
+        )
         cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
       }
     }
@@ -56,6 +61,11 @@ android {
   }
 
   buildTypes {
+    debug {
+      ndk {
+        debugSymbolLevel = "NONE"
+      }
+    }
     release {
       isMinifyEnabled = false
       proguardFiles(

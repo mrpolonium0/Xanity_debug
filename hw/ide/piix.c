@@ -236,3 +236,9 @@ static void piix_ide_register_types(void)
 }
 
 type_init(piix_ide_register_types)
+
+#ifdef __ANDROID__
+void xemu_android_force_piix_ide_link(void)
+{
+}
+#endif

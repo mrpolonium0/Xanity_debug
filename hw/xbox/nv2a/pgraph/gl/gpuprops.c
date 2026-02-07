@@ -335,6 +335,19 @@ static void determine_triangle_winding_order(uint8_t *pixels, int width,
 
 void pgraph_gl_determine_gpu_properties(void)
 {
+#ifdef __ANDROID__
+    // Skip shader-based probing on Android GLES; some drivers crash here.
+    pgraph_gl_gpu_properties.geom_shader_winding.tri = 0;
+    pgraph_gl_gpu_properties.geom_shader_winding.tri_strip0 = 0;
+    pgraph_gl_gpu_properties.geom_shader_winding.tri_strip1 = 0;
+    pgraph_gl_gpu_properties.geom_shader_winding.tri_fan = 1;
+    fprintf(stderr, "GL geometry shader winding: %d, %d, %d, %d (Android default)\n",
+            pgraph_gl_gpu_properties.geom_shader_winding.tri,
+            pgraph_gl_gpu_properties.geom_shader_winding.tri_strip0,
+            pgraph_gl_gpu_properties.geom_shader_winding.tri_strip1,
+            pgraph_gl_gpu_properties.geom_shader_winding.tri_fan);
+    return;
+#endif
     const int width = 640;
     const int height = 480;
 

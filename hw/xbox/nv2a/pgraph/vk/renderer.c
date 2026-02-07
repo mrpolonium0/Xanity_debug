@@ -22,6 +22,10 @@
 
 #include "gloffscreen.h"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
 #if HAVE_EXTERNAL_MEMORY
 static GloContext *g_gl_context;
 #endif
@@ -29,7 +33,15 @@ static GloContext *g_gl_context;
 static void early_context_init(void)
 {
 #if HAVE_EXTERNAL_MEMORY
+#ifdef __ANDROID__
+    /*
+     * On Android, only cache EGL share/config on the SDL thread here.
+     * Create/bind the offscreen context later on the renderer thread.
+     */
+    glo_android_cache_current_egl_state();
+#else
     g_gl_context = glo_context_create();
+#endif
 #endif
 }
 
@@ -40,7 +52,28 @@ static void pgraph_vk_init(NV2AState *d, Error **errp)
     pg->vk_renderer_state = (PGRAPHVkState *)g_malloc0(sizeof(PGRAPHVkState));
 
 #if HAVE_EXTERNAL_MEMORY
+#ifdef __ANDROID__
+    if (!g_gl_context) {
+        // On Android, we need to ensure the main GL context is accessible
+        // for context sharing. The EGL state should already be cached.
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "pgraph_vk_init: creating GL offscreen context");
+        g_gl_context = glo_context_create();
+        if (!g_gl_context) {
+            __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                                "pgraph_vk_init: glo_context_create failed");
+        }
+    }
+#endif
+    if (!g_gl_context) {
+        error_setg(errp, "Failed to create GL offscreen context for Vulkan display");
+        return;
+    }
     glo_set_current(g_gl_context);
+    if (!pgraph_vk_gl_external_memory_available()) {
+        error_setg(errp, "GL_EXT_memory_object not available for Vulkan display");
+        return;
+    }
 #endif
 
     pgraph_vk_debug_init();
@@ -83,6 +116,13 @@ static void pgraph_vk_finalize(NV2AState *d)
 
     g_free(pg->vk_renderer_state);
     pg->vk_renderer_state = NULL;
+
+#if HAVE_EXTERNAL_MEMORY
+    if (g_gl_context) {
+        glo_context_destroy(g_gl_context);
+        g_gl_context = NULL;
+    }
+#endif
 }
 
 static void pgraph_vk_flush(NV2AState *d)
@@ -236,6 +276,16 @@ static PGRAPHRenderer pgraph_vk_renderer = {
 static void __attribute__((constructor)) register_renderer(void)
 {
     pgraph_renderer_register(&pgraph_vk_renderer);
+}
+
+void pgraph_vk_force_register(void)
+{
+    static bool registered = false;
+    if (registered) {
+        return;
+    }
+    pgraph_renderer_register(&pgraph_vk_renderer);
+    registered = true;
 }
 
 void pgraph_vk_check_memory_budget(PGRAPHState *pg)

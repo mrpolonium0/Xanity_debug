@@ -320,7 +320,11 @@ int xemu_input_get_controller_default_bind_port(ControllerState *state, int star
     }
 
     for (int i = start; i < 4; i++) {
-        if (strcmp(guid, *port_index_to_settings_key_map[i]) == 0) {
+        const char *binding = *port_index_to_settings_key_map[i];
+        if (binding == NULL || binding[0] == '\0') {
+            continue;
+        }
+        if (strcmp(guid, binding) == 0) {
             return i;
         }
     }

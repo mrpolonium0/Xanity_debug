@@ -111,3 +111,9 @@ static void mcpx_aci_register(void)
 }
 
 type_init(mcpx_aci_register);
+
+#ifdef __ANDROID__
+void xemu_android_force_mcpx_aci_link(void)
+{
+}
+#endif

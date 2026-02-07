@@ -24,11 +24,55 @@
 #include "debug.h"
 #include "renderer.h"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
 GloContext *g_nv2a_context_render;
 GloContext *g_nv2a_context_display;
 
+#ifdef __ANDROID__
+static bool gl_extension_list_has(const char *exts, const char *ext)
+{
+    if (!exts || !ext || !*ext) {
+        return false;
+    }
+    size_t len = strlen(ext);
+    const char *p = exts;
+    while ((p = strstr(p, ext)) != NULL) {
+        if ((p == exts || p[-1] == ' ') && (p[len] == '\0' || p[len] == ' ')) {
+            return true;
+        }
+        p += len;
+    }
+    return false;
+}
+#endif
+
 static void early_context_init(void)
 {
+#ifdef __ANDROID__
+    g_nv2a_context_display = glo_context_wrap_current();
+    if (!g_nv2a_context_display) {
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                            "early_context_init: no current GL context");
+#endif
+        fprintf(stderr, "Warning: Failed to wrap current GL context\n");
+        return;
+    }
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "early_context_init: wrapped current GL context");
+#endif
+    // Android: defer render context creation to QEMU thread.
+    g_nv2a_context_render = NULL;
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "early_context_init: defer render GL context creation");
+#endif
+    return;
+#endif
     g_nv2a_context_render = glo_context_create();
     g_nv2a_context_display = glo_context_create();
 
@@ -50,16 +94,48 @@ static void pgraph_gl_init(NV2AState *d, Error **errp)
     PGRAPHGLState *r = pg->gl_renderer_state;
 
     /* fire up opengl */
+#ifdef __ANDROID__
+    if (!g_nv2a_context_render) {
+        g_nv2a_context_render = glo_context_create();
+        if (!g_nv2a_context_render) {
+            error_setg(errp, "Failed to create render GL context");
+            return;
+        }
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "pgraph_gl_init: created render GL context");
+    }
+#endif
     glo_set_current(g_nv2a_context_render);
+
+#ifdef __ANDROID__
+    const char *exts = (const char *)glGetString(GL_EXTENSIONS);
+    r->bgra_supported = gl_extension_list_has(exts, "GL_EXT_texture_format_BGRA8888") ||
+                        gl_extension_list_has(exts, "GL_OES_texture_format_BGRA8888") ||
+                        gl_extension_list_has(exts, "GL_EXT_texture_format_BGRA8888_OES");
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "pgraph_gl_init: bgra_supported=%s",
+                        r->bgra_supported ? "yes" : "no");
+#endif
 
 #if DEBUG_NV2A_GL
     gl_debug_initialize();
 #endif
 
+#ifdef __ANDROID__
+    pgraph_gl_determine_gpu_properties();
+#endif
+
+#ifdef __ANDROID__
+    /* DXT textures may be available via extension on Android. */
+    if (!glo_check_extension("GL_EXT_texture_compression_s3tc")) {
+        fprintf(stderr, "Warning: GL_EXT_texture_compression_s3tc not available\n");
+    }
+#else
     /* DXT textures */
     assert(glo_check_extension("GL_EXT_texture_compression_s3tc"));
     /*  Internal RGB565 texture format */
     assert(glo_check_extension("GL_ARB_ES2_compatibility"));
+#endif
 
     glGetFloatv(GL_SMOOTH_LINE_WIDTH_RANGE, r->supported_smooth_line_width_range);
     glGetFloatv(GL_ALIASED_LINE_WIDTH_RANGE, r->supported_aliased_line_width_range);
@@ -214,4 +290,14 @@ static PGRAPHRenderer pgraph_gl_renderer = {
 static void __attribute__((constructor)) register_renderer(void)
 {
     pgraph_renderer_register(&pgraph_gl_renderer);
+}
+
+void pgraph_gl_force_register(void)
+{
+    static bool registered = false;
+    if (registered) {
+        return;
+    }
+    pgraph_renderer_register(&pgraph_gl_renderer);
+    registered = true;
 }

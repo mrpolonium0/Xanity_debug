@@ -26,6 +26,10 @@
 #include <SDL_syswm.h>
 #include <SDL_vulkan.h>
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
 #include <volk.h>
 
 #define VkExtensionPropertiesArray GArray
@@ -99,6 +103,15 @@ static bool check_validation_layer_support(void)
 
 static void create_window(PGRAPHVkState *r, Error **errp)
 {
+#ifdef __ANDROID__
+    /*
+     * Android supports a single SDL window per process for this app flow.
+     * The Vulkan renderer is headless and only needs instance/device setup,
+     * so skip creating a hidden Vulkan window here.
+     */
+    r->window = NULL;
+    return;
+#endif
     r->window = SDL_CreateWindow(
         "SDL Offscreen Window", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         640, 480, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
@@ -155,13 +168,15 @@ static StringArray *get_required_instance_extension_names(PGRAPHState *pg)
 
     // Add instance extensions SDL lists as required
     unsigned int sdl_count = 0;
-    SDL_Vulkan_GetInstanceExtensions((SDL_Window *)r->window, &sdl_count, NULL);
+    if (r->window) {
+        SDL_Vulkan_GetInstanceExtensions((SDL_Window *)r->window, &sdl_count, NULL);
+    }
 
     StringArray *extensions =
         g_array_sized_new(FALSE, FALSE, sizeof(char *),
                           sdl_count + ARRAY_SIZE(required_instance_extensions));
 
-    if (sdl_count) {
+    if (sdl_count && r->window) {
         g_array_set_size(extensions, sdl_count);
         SDL_Vulkan_GetInstanceExtensions((SDL_Window *)r->window, &sdl_count,
                                          (const char **)extensions->data);
@@ -553,32 +568,63 @@ static bool create_logical_device(PGRAPHState *pg, Error **errp)
             .enabled = &r->enabled_physical_device_features.n, \
             .required = req, \
         }
-        F(depthClamp, true),
-        F(fillModeNonSolid, true),
+        F(depthClamp, false),
+        F(fillModeNonSolid, false),
         F(geometryShader, true),
-        F(occlusionQueryPrecise, true),
+        F(occlusionQueryPrecise, false),
         F(samplerAnisotropy, false),
-        F(shaderClipDistance, true),
-        F(shaderTessellationAndGeometryPointSize, true),
+        F(shaderClipDistance, false),
+        F(shaderTessellationAndGeometryPointSize, false),
         F(wideLines, false),
         #undef F
         // clang-format on
     };
 
     bool all_required_features_available = true;
+    char missing_required_features[256] = { 0 };
+    size_t missing_required_len = 0;
     for (int i = 0; i < ARRAY_SIZE(desired_features); i++) {
+        fprintf(stderr, "Vulkan feature %-36s : %s%s\n",
+                desired_features[i].name,
+                desired_features[i].available == VK_TRUE ? "available" : "missing",
+                desired_features[i].required ? " (required)" : "");
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "vk feature %s: %s%s",
+                            desired_features[i].name,
+                            desired_features[i].available == VK_TRUE ? "available" : "missing",
+                            desired_features[i].required ? " (required)" : "");
+#endif
         if (desired_features[i].required &&
             desired_features[i].available != VK_TRUE) {
             fprintf(stderr,
                     "Error: Device does not support required feature %s\n",
                     desired_features[i].name);
+#ifdef __ANDROID__
+            __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                                "vk required feature missing: %s",
+                                desired_features[i].name);
+#endif
+            int n = snprintf(missing_required_features + missing_required_len,
+                             sizeof(missing_required_features) - missing_required_len,
+                             "%s%s",
+                             missing_required_len ? ", " : "",
+                             desired_features[i].name);
+            if (n > 0) {
+                size_t remaining = sizeof(missing_required_features) -
+                                   missing_required_len - 1;
+                size_t consumed = (size_t)n > remaining ? remaining : (size_t)n;
+                missing_required_len += consumed;
+            }
             all_required_features_available = false;
         }
         *desired_features[i].enabled = desired_features[i].available;
     }
 
     if (!all_required_features_available) {
-        error_setg(errp, "Device does not support required features");
+        error_setg(errp, "Device does not support required features: %s",
+                   missing_required_features[0] ?
+                   missing_required_features : "(unknown)");
         return false;
     }
 

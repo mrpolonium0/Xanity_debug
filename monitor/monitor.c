@@ -33,6 +33,9 @@
 #include "qemu/option.h"
 #include "system/qtest.h"
 #include "trace.h"
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 
 /*
  * To prevent flooding clients, events can be throttled. The
@@ -278,7 +281,17 @@ int error_vprintf(const char *fmt, va_list ap)
     if (cur_mon && !monitor_cur_is_qmp()) {
         return monitor_vprintf(cur_mon, fmt, ap);
     }
+#ifdef __ANDROID__
+    char buf[1024];
+    va_list ap_copy;
+    va_copy(ap_copy, ap);
+    int len = vsnprintf(buf, sizeof(buf), fmt, ap_copy);
+    va_end(ap_copy);
+    __android_log_print(ANDROID_LOG_ERROR, "xemu-android", "%s", buf);
+    return len;
+#else
     return vfprintf(stderr, fmt, ap);
+#endif
 }
 
 int error_vprintf_unless_qmp(const char *fmt, va_list ap)
@@ -286,7 +299,17 @@ int error_vprintf_unless_qmp(const char *fmt, va_list ap)
     Monitor *cur_mon = monitor_cur();
 
     if (!cur_mon) {
+#ifdef __ANDROID__
+        char buf[1024];
+        va_list ap_copy;
+        va_copy(ap_copy, ap);
+        int len = vsnprintf(buf, sizeof(buf), fmt, ap_copy);
+        va_end(ap_copy);
+        __android_log_print(ANDROID_LOG_ERROR, "xemu-android", "%s", buf);
+        return len;
+#else
         return vfprintf(stderr, fmt, ap);
+#endif
     }
     if (!monitor_cur_is_qmp()) {
         return monitor_vprintf(cur_mon, fmt, ap);

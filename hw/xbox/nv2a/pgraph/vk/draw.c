@@ -788,17 +788,25 @@ static void create_pipeline(PGRAPHState *pg)
 
     void *rasterizer_next_struct = NULL;
 
+    VkPolygonMode polygon_mode =
+        pgraph_polygon_mode_vk_map[r->shader_binding->state.geom.polygon_front_mode];
+    if (polygon_mode != VK_POLYGON_MODE_FILL &&
+        r->enabled_physical_device_features.fillModeNonSolid != VK_TRUE) {
+        polygon_mode = VK_POLYGON_MODE_FILL;
+    }
+
     VkPipelineRasterizationStateCreateInfo rasterizer = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .depthClampEnable = VK_TRUE,
+        .depthClampEnable =
+            r->enabled_physical_device_features.depthClamp == VK_TRUE ?
+            VK_TRUE : VK_FALSE,
         .rasterizerDiscardEnable = VK_FALSE,
-        .polygonMode = pgraph_polygon_mode_vk_map[r->shader_binding->state
-                                                      .geom.polygon_front_mode],
+        .polygonMode = polygon_mode,
         .lineWidth = 1.0f,
         .frontFace = (pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER) &
                       NV_PGRAPH_SETUPRASTER_FRONTFACE) ?
-                         VK_FRONT_FACE_COUNTER_CLOCKWISE :
-                         VK_FRONT_FACE_CLOCKWISE,
+                          VK_FRONT_FACE_COUNTER_CLOCKWISE :
+                          VK_FRONT_FACE_CLOCKWISE,
         .depthBiasEnable = VK_FALSE,
         .pNext = rasterizer_next_struct,
     };
@@ -1067,8 +1075,11 @@ static void begin_query(PGRAPHVkState *r)
     nv2a_profile_inc_counter(NV2A_PROF_QUERY);
     vkCmdResetQueryPool(r->command_buffer, r->query_pool,
                         r->num_queries_in_flight, 1);
+    VkQueryControlFlags query_flags =
+        r->enabled_physical_device_features.occlusionQueryPrecise == VK_TRUE ?
+        VK_QUERY_CONTROL_PRECISE_BIT : 0;
     vkCmdBeginQuery(r->command_buffer, r->query_pool, r->num_queries_in_flight,
-                    VK_QUERY_CONTROL_PRECISE_BIT);
+                    query_flags);
 
     r->query_in_flight = true;
     r->new_query_needed = false;

@@ -297,14 +297,16 @@ MString *pgraph_glsl_gen_geom(const GeomState *state, GenGeomGlslOptions opts)
     assert(layout_in);
     assert(layout_out);
     assert(body);
-    MString *output =
-        mstring_from_fmt("#version %d\n\n"
-                         "%s"
-                         "%s"
-                         "\n"
-                         "#define v_vtxPos v_vtxPos0\n"
-                         "\n",
-                         opts.vulkan ? 450 : 400, layout_in, layout_out);
+    MString *output = mstring_new();
+    pgraph_glsl_append_version(output, opts.vulkan, opts.gles,
+                               opts.gles_version);
+    mstring_append_fmt(output,
+                       "%s"
+                       "%s"
+                       "\n"
+                       "#define v_vtxPos v_vtxPos0\n"
+                       "\n",
+                       layout_in, layout_out);
     pgraph_glsl_get_vtx_header(output, opts.vulkan, state->smooth_shading, true,
                                true, true);
     pgraph_glsl_get_vtx_header(output, opts.vulkan, state->smooth_shading,
@@ -338,11 +340,13 @@ MString *pgraph_glsl_gen_geom(const GeomState *state, GenGeomGlslOptions opts)
         provoking_index = "index";
     }
 
+    const char *point_size_expr =
+        opts.gles ? "v_vtxPointSize[index]" : "gl_in[index].gl_PointSize";
     mstring_append_fmt(
         output,
         "void emit_vertex(int index, mat4 pz) {\n"
         "  gl_Position = gl_in[index].gl_Position;\n"
-        "  gl_PointSize = gl_in[index].gl_PointSize;\n"
+        "  gl_PointSize = %s;\n"
         "  vtxD0 = v_vtxD0[%s];\n"
         "  vtxD1 = v_vtxD1[%s];\n"
         "  vtxB0 = v_vtxB0[%s];\n"
@@ -356,8 +360,10 @@ MString *pgraph_glsl_gen_geom(const GeomState *state, GenGeomGlslOptions opts)
         "  vtxPos1 = pz[1];\n"
         "  vtxPos2 = pz[2];\n"
         "  triMZ = (isnan(pz[3].x) || isinf(pz[3].x)) ? 0.0 : pz[3].x;\n"
+        "  vtxPointSize = v_vtxPointSize[index];\n"
         "  EmitVertex();\n"
         "}\n",
+        point_size_expr,
         provoking_index,
         provoking_index,
         provoking_index,

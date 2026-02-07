@@ -7,6 +7,9 @@
  */
 
 #include "qemu/osdep.h"
+#ifdef __ANDROID__
+#include <sys/sysmacros.h>
+#endif
 #include "qemu/cutils.h"
 #include "qemu/selfmap.h"
 

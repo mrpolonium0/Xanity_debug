@@ -98,6 +98,8 @@ DECL_UNIFORM_TYPES(VshUniform, VSH_UNIFORM_DECL_X)
 
 typedef struct GenVshGlslOptions {
     bool vulkan;
+    bool gles;
+    int gles_version;
     bool prefix_outputs;
     bool use_push_constants_for_uniform_attrs;
     int ubo_binding;

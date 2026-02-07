@@ -267,3 +267,9 @@ static void ide_register_types(void)
 }
 
 type_init(ide_register_types)
+
+#ifdef __ANDROID__
+void xemu_android_force_ide_dev_link(void)
+{
+}
+#endif

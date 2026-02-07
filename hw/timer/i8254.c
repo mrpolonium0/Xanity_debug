@@ -383,3 +383,9 @@ static void pit_register_types(void)
 }
 
 type_init(pit_register_types)
+
+#ifdef __ANDROID__
+void xemu_android_force_i8254_link(void)
+{
+}
+#endif

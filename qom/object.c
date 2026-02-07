@@ -226,8 +226,8 @@ static TypeImpl *type_get_parent(TypeImpl *type)
     if (!type->parent_type && type->parent) {
         type->parent_type = type_get_by_name_noload(type->parent);
         if (!type->parent_type) {
-            fprintf(stderr, "Type '%s' is missing its parent '%s'\n",
-                    type->name, type->parent);
+            error_report("Type '%s' is missing its parent '%s'",
+                         type->name, type->parent);
             abort();
         }
     }

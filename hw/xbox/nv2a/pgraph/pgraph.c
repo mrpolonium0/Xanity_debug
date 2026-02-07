@@ -21,6 +21,10 @@
 
 #include <math.h>
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
 #include "hw/xbox/nv2a/nv2a_int.h"
 #include "ui/xemu-notifications.h"
 #include "ui/xemu-settings.h"
@@ -208,6 +212,15 @@ void pgraph_context_switch(NV2AState *d, unsigned int channel_id)
 }
 
 static const PGRAPHRenderer *renderers[CONFIG_DISPLAY_RENDERER__COUNT];
+#ifdef __ANDROID__
+static bool nv2a_android_early_init_done;
+#ifdef CONFIG_OPENGL
+void pgraph_gl_force_register(void);
+#endif
+#ifdef CONFIG_VULKAN
+void pgraph_vk_force_register(void);
+#endif
+#endif
 
 void pgraph_renderer_register(const PGRAPHRenderer *renderer)
 {
@@ -253,6 +266,18 @@ void pgraph_clear_dirty_reg_map(PGRAPHState *pg)
 
 static CONFIG_DISPLAY_RENDERER get_default_renderer(void)
 {
+#ifdef __ANDROID__
+#ifdef CONFIG_VULKAN
+    if (renderers[CONFIG_DISPLAY_RENDERER_VULKAN]) {
+        return CONFIG_DISPLAY_RENDERER_VULKAN;
+    }
+#endif
+#ifdef CONFIG_OPENGL
+    if (renderers[CONFIG_DISPLAY_RENDERER_OPENGL]) {
+        return CONFIG_DISPLAY_RENDERER_OPENGL;
+    }
+#endif
+#else
 #ifdef CONFIG_OPENGL
     if (renderers[CONFIG_DISPLAY_RENDERER_OPENGL]) {
         return CONFIG_DISPLAY_RENDERER_OPENGL;
@@ -263,6 +288,7 @@ static CONFIG_DISPLAY_RENDERER get_default_renderer(void)
         return CONFIG_DISPLAY_RENDERER_VULKAN;
     }
 #endif
+#endif
     fprintf(stderr, "Warning: No available renderer\n");
     return CONFIG_DISPLAY_RENDERER_NULL;
 }
@@ -271,6 +297,10 @@ void nv2a_context_init(void)
 {
     if (!renderers[g_config.display.renderer]) {
         g_config.display.renderer = get_default_renderer();
+        if (!renderers[g_config.display.renderer]) {
+            fprintf(stderr, "Warning: No available renderer\n");
+            return;
+        }
         fprintf(stderr,
                 "Warning: Configured renderer unavailable. Switching to %s.\n",
                 renderers[g_config.display.renderer]->name);
@@ -279,6 +309,11 @@ void nv2a_context_init(void)
     // FIXME: We need a mechanism for renderer to initialize new GL contexts
     //        on the main thread at run time. For now, just let them all create
     //        what they need.
+#ifdef __ANDROID__
+    if (!nv2a_android_early_init_done) {
+        fprintf(stderr, "Warning: NV2A early context init not run on SDL thread\n");
+    }
+#else
     for (int i = 0; i < ARRAY_SIZE(renderers); i++) {
         const PGRAPHRenderer *r = renderers[i];
         if (!r) {
@@ -288,7 +323,47 @@ void nv2a_context_init(void)
             r->ops.early_context_init();
         }
     }
+#endif
 }
+
+#ifdef __ANDROID__
+void nv2a_android_early_context_init(void)
+{
+    if (nv2a_android_early_init_done) {
+        return;
+    }
+#ifdef CONFIG_VULKAN
+    pgraph_vk_force_register();
+#endif
+#ifdef CONFIG_OPENGL
+    pgraph_gl_force_register();
+#endif
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "nv2a_android_early_context_init: renderer=%d",
+                        g_config.display.renderer);
+#endif
+    if (!renderers[g_config.display.renderer]) {
+        g_config.display.renderer = get_default_renderer();
+        if (!renderers[g_config.display.renderer]) {
+#ifdef __ANDROID__
+            __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                                "nv2a_android_early_context_init: no renderer available");
+#endif
+            fprintf(stderr, "Warning: No available renderer\n");
+            return;
+        }
+        fprintf(stderr,
+                "Warning: Configured renderer unavailable. Switching to %s.\n",
+                renderers[g_config.display.renderer]->name);
+    }
+    const PGRAPHRenderer *r = renderers[g_config.display.renderer];
+    if (r && r->ops.early_context_init) {
+        r->ops.early_context_init();
+    }
+    nv2a_android_early_init_done = true;
+}
+#endif
 
 static bool attempt_renderer_init(PGRAPHState *pg)
 {
@@ -301,11 +376,21 @@ static bool attempt_renderer_init(PGRAPHState *pg)
     }
 
     Error *local_err = NULL;
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "attempt_renderer_init: renderer=%d name=%s",
+                        g_config.display.renderer,
+                        pg->renderer->name);
+#endif
     if (pg->renderer->ops.init) {
         pg->renderer->ops.init(d, &local_err);
     }
     if (local_err) {
         const char *msg = error_get_pretty(local_err);
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                            "attempt_renderer_init failed: %s", msg ? msg : "(null)");
+#endif
         xemu_queue_error_message(msg);
         error_free(local_err);
         local_err = NULL;

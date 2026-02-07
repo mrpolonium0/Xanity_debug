@@ -1091,3 +1091,9 @@ static void nvnet_register(void)
 }
 
 type_init(nvnet_register)
+
+#ifdef __ANDROID__
+void xemu_android_force_nvnet_link(void)
+{
+}
+#endif

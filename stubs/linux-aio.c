@@ -11,6 +11,10 @@
 #include "block/aio.h"
 #include "block/raw-aio.h"
 
+#ifndef CONFIG_LINUX_AIO
+typedef struct LinuxAioState LinuxAioState;
+#endif
+
 void laio_detach_aio_context(LinuxAioState *s, AioContext *old_context)
 {
     abort();

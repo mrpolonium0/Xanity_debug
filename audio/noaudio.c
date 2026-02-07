@@ -143,3 +143,9 @@ static void register_audio_none(void)
     audio_driver_register(&no_audio_driver);
 }
 type_init(register_audio_none);
+
+#ifdef __ANDROID__
+void xemu_android_force_noaudio_link(void)
+{
+}
+#endif

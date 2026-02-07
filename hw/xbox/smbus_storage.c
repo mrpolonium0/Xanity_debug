@@ -184,3 +184,9 @@ static void smbus_storage_register_devices(void)
 }
 
 type_init(smbus_storage_register_devices)
+
+#ifdef __ANDROID__
+void xemu_android_force_smbus_storage_link(void)
+{
+}
+#endif

@@ -365,3 +365,9 @@ static void pci_testdev_register_types(void)
 }
 
 type_init(pci_testdev_register_types)
+
+#ifdef __ANDROID__
+void xemu_android_force_pci_testdev_link(void)
+{
+}
+#endif

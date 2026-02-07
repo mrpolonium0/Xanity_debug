@@ -78,6 +78,15 @@
 #include "chardev/char.h"
 #include "qemu/bitmap.h"
 #include "qemu/log.h"
+
+#ifdef __ANDROID__
+#include <android/log.h>
+#define ANDROID_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "xemu-android", __VA_ARGS__)
+#define ANDROID_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "xemu-android", __VA_ARGS__)
+#else
+#define ANDROID_LOGI(...) ((void)0)
+#define ANDROID_LOGE(...) ((void)0)
+#endif
 #include "system/blockdev.h"
 #include "hw/block/block.h"
 #include "hw/i386/x86.h"
@@ -2902,7 +2911,10 @@ void qmp_x_exit_preconfig(Error **errp)
             }
         }
     } else if (autostart) {
+        ANDROID_LOGI("Autostart: qmp_cont");
         qmp_cont(NULL);
+    } else {
+        ANDROID_LOGI("Autostart disabled: runstate=%d", (int)runstate_get());
     }
 }
 
@@ -2922,6 +2934,7 @@ static const char *get_eeprom_path(void)
                                         path);
             xemu_queue_error_message(msg);
             g_free(msg);
+            ANDROID_LOGE("EEPROM generation failed: %s", path);
             return NULL;
         }
     }
@@ -2933,6 +2946,7 @@ static const char *get_eeprom_path(void)
                                     "Please check machine settings.", path);
         xemu_queue_error_message(msg);
         g_free(msg);
+        ANDROID_LOGE("EEPROM open failed: %s", path);
         return NULL;
     }
 
@@ -2942,6 +2956,7 @@ static const char *get_eeprom_path(void)
             "Please check machine settings.", path, size);
         xemu_queue_error_message(msg);
         g_free(msg);
+        ANDROID_LOGE("EEPROM size invalid (%d): %s", size, path);
         return NULL;
     }
 
@@ -3036,6 +3051,7 @@ void qemu_init(int argc, char **argv)
         free(escaped_eeprom_path);
     } else {
         autostart = 0;
+        ANDROID_LOGE("Autostart disabled: EEPROM missing/invalid");
     }
 
     const char *flashrom_path = g_config.sys.files.flashrom_path;
@@ -3043,11 +3059,13 @@ void qemu_init(int argc, char **argv)
         // Don't display an error if this is the first boot. Give user a chance
         // to configure the path.
         autostart = 0;
+        ANDROID_LOGI("Autostart disabled: show_welcome=true");
     } else if (xemu_check_file(flashrom_path)) {
         char *msg = g_strdup_printf("Failed to open flash file '%s'. Please check machine settings.", flashrom_path);
         xemu_queue_error_message(msg);
         g_free(msg);
         autostart = 0;
+        ANDROID_LOGE("Autostart disabled: flashrom missing '%s'", flashrom_path);
     } else {
         fake_argv[fake_argc++] = strdup("-bios");
         fake_argv[fake_argc++] = strdup(flashrom_path);

@@ -229,6 +229,61 @@
                 android:textAppearance="@style/TextAppearance.Material3.BodySmall"
                 android:textColor="@color/xemu_text_muted" />
             </LinearLayout>
+
+            <LinearLayout
+              android:id="@+id/page_disc"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:orientation="vertical"
+              android:visibility="gone">
+
+              <ImageView
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_gravity="center_horizontal"
+                android:contentDescription="@string/setup_disc_title"
+                android:src="@android:drawable/ic_menu_slideshow"
+                android:tint="@color/xemu_green" />
+
+              <TextView
+                android:id="@+id/setup_disc_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/setup_disc_title"
+                android:textAppearance="@style/TextAppearance.Material3.TitleLarge" />
+
+              <TextView
+                android:id="@+id/setup_disc_body"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/setup_disc_body"
+                android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+                android:textColor="@color/xemu_text_muted" />
+
+              <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_pick_disc"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/setup_pick_disc"
+                app:icon="@android:drawable/ic_menu_slideshow"
+                app:iconGravity="textStart"
+                app:iconPadding="8dp" />
+
+              <TextView
+                android:id="@+id/disc_path_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/setup_wizard_path_background"
+                android:ellipsize="end"
+                android:maxLines="2"
+                android:text="@string/setup_not_set"
+                android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+                android:textColor="@color/xemu_text_muted" />
+            </LinearLayout>
           </FrameLayout>
 
           <Space
@@ -259,6 +314,13 @@
 
             <View
               android:id="@+id/step_indicator_hdd"
+              android:layout_width="28dp"
+              android:layout_height="6dp"
+              android:layout_marginStart="8dp"
+              android:background="@drawable/setup_wizard_indicator_inactive" />
+
+            <View
+              android:id="@+id/step_indicator_disc"
               android:layout_width="28dp"
               android:layout_height="6dp"
               android:layout_marginStart="8dp"

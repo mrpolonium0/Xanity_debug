@@ -3,6 +3,7 @@ package com.izzy2lost.x1box
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.widget.TextView
 import android.widget.Toast
@@ -10,6 +11,9 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 
 class SetupWizardActivity : AppCompatActivity() {
   private val prefs by lazy { getSharedPreferences("x1box_prefs", MODE_PRIVATE) }
@@ -17,23 +21,41 @@ class SetupWizardActivity : AppCompatActivity() {
   private lateinit var pageMcpx: View
   private lateinit var pageFlash: View
   private lateinit var pageHdd: View
+  private lateinit var pageDisc: View
+  private lateinit var pages: List<View>
   private lateinit var mcpxPathText: TextView
   private lateinit var flashPathText: TextView
   private lateinit var hddPathText: TextView
+  private lateinit var discPathText: TextView
   private lateinit var btnBack: MaterialButton
   private lateinit var btnNext: MaterialButton
   private lateinit var indicatorMcpx: View
   private lateinit var indicatorFlash: View
   private lateinit var indicatorHdd: View
+  private lateinit var indicatorDisc: View
+  private lateinit var indicators: List<View>
 
   private var mcpxUri: Uri? = null
   private var flashUri: Uri? = null
   private var hddUri: Uri? = null
+  private var dvdUri: Uri? = null
+  private var mcpxPath: String? = null
+  private var flashPath: String? = null
+  private var hddPath: String? = null
+  private var dvdPath: String? = null
   private var currentStep = 0
+  private var isCopying = false
 
   private val mcpxExts = setOf("bin", "rom", "img")
   private val flashExts = setOf("bin", "rom", "img")
   private val hddExts = setOf("qcow2", "img")
+  private val discExts = setOf("iso", "xiso", "cso", "cci")
+  private val discMimes = setOf(
+    "application/x-iso9660-image",
+    "application/x-cd-image",
+    "application/x-iso9660",
+    "application/vnd.iso-image"
+  )
 
   private val pickMcpx =
     registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -45,8 +67,16 @@ class SetupWizardActivity : AppCompatActivity() {
         persistUriPermission(uri)
         mcpxUri = uri
         prefs.edit().putString("mcpxUri", uri.toString()).apply()
-        updateMcpxSelection()
-        updateButtons()
+        copyUriAsync(uri, "mcpx.bin") { path ->
+          if (path != null) {
+            mcpxPath = path
+            prefs.edit().putString("mcpxPath", path).apply()
+          } else {
+            Toast.makeText(this, "Failed to copy MCPX ROM", Toast.LENGTH_LONG).show()
+          }
+          updateMcpxSelection()
+          updateButtons()
+        }
       }
     }
 
@@ -60,8 +90,16 @@ class SetupWizardActivity : AppCompatActivity() {
         persistUriPermission(uri)
         flashUri = uri
         prefs.edit().putString("flashUri", uri.toString()).apply()
-        updateFlashSelection()
-        updateButtons()
+        copyUriAsync(uri, "flash.bin") { path ->
+          if (path != null) {
+            flashPath = path
+            prefs.edit().putString("flashPath", path).apply()
+          } else {
+            Toast.makeText(this, "Failed to copy flash ROM", Toast.LENGTH_LONG).show()
+          }
+          updateFlashSelection()
+          updateButtons()
+        }
       }
     }
 
@@ -75,19 +113,57 @@ class SetupWizardActivity : AppCompatActivity() {
         persistUriPermission(uri)
         hddUri = uri
         prefs.edit().putString("hddUri", uri.toString()).apply()
-        updateHddSelection()
-        updateButtons()
+        copyUriAsync(uri, "hdd.img") { path ->
+          if (path != null) {
+            hddPath = path
+            prefs.edit().putString("hddPath", path).apply()
+          } else {
+            Toast.makeText(this, "Failed to copy HDD image", Toast.LENGTH_LONG).show()
+          }
+          updateHddSelection()
+          updateButtons()
+        }
+      }
+    }
+
+  private val pickDisc =
+    registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+      if (uri != null) {
+        if (!isAllowedFile(uri, discExts, discMimes)) {
+          showExtensionError(discExts)
+          return@registerForActivityResult
+        }
+        persistUriPermission(uri)
+        dvdUri = uri
+        prefs.edit().putString("dvdUri", uri.toString()).apply()
+        copyUriAsync(uri, "dvd.iso") { path ->
+          if (path != null) {
+            dvdPath = path
+            prefs.edit().putString("dvdPath", path).apply()
+          } else {
+            Toast.makeText(this, "Failed to copy game disc image", Toast.LENGTH_LONG).show()
+          }
+          updateDiscSelection()
+          updateButtons()
+        }
       }
     }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
+    mcpxPath = loadLocalPath("mcpxPath")
+    flashPath = loadLocalPath("flashPath")
+    hddPath = loadLocalPath("hddPath")
+    dvdPath = loadLocalPath("dvdPath")
     mcpxUri = prefs.getString("mcpxUri", null)?.let(Uri::parse)
     flashUri = prefs.getString("flashUri", null)?.let(Uri::parse)
     hddUri = prefs.getString("hddUri", null)?.let(Uri::parse)
+    dvdUri = prefs.getString("dvdUri", null)?.let(Uri::parse)
 
-    if (prefs.getBoolean("setup_complete", false) && mcpxUri != null && flashUri != null && hddUri != null) {
+    val coreReady = isFileReady(mcpxPath) && isFileReady(flashPath) && isFileReady(hddPath)
+    val discReady = isFileReady(dvdPath)
+    if (prefs.getBoolean("setup_complete", false) && coreReady && discReady) {
       goToMain()
       return
     }
@@ -106,26 +182,33 @@ class SetupWizardActivity : AppCompatActivity() {
     pageMcpx = findViewById(R.id.page_mcpx)
     pageFlash = findViewById(R.id.page_flash)
     pageHdd = findViewById(R.id.page_hdd)
+    pageDisc = findViewById(R.id.page_disc)
+    pages = listOf(pageMcpx, pageFlash, pageHdd, pageDisc)
     mcpxPathText = findViewById(R.id.mcpx_path_text)
     flashPathText = findViewById(R.id.flash_path_text)
     hddPathText = findViewById(R.id.hdd_path_text)
+    discPathText = findViewById(R.id.disc_path_text)
     btnBack = findViewById(R.id.btn_wizard_back)
     btnNext = findViewById(R.id.btn_wizard_next)
     indicatorMcpx = findViewById(R.id.step_indicator_mcpx)
     indicatorFlash = findViewById(R.id.step_indicator_flash)
     indicatorHdd = findViewById(R.id.step_indicator_hdd)
+    indicatorDisc = findViewById(R.id.step_indicator_disc)
+    indicators = listOf(indicatorMcpx, indicatorFlash, indicatorHdd, indicatorDisc)
 
     val btnPickMcpx: MaterialButton = findViewById(R.id.btn_pick_mcpx)
     val btnPickFlash: MaterialButton = findViewById(R.id.btn_pick_flash)
     val btnPickHdd: MaterialButton = findViewById(R.id.btn_pick_hdd)
+    val btnPickDisc: MaterialButton = findViewById(R.id.btn_pick_disc)
 
     btnPickMcpx.setOnClickListener { pickMcpx.launch(arrayOf("application/octet-stream")) }
     btnPickFlash.setOnClickListener { pickFlash.launch(arrayOf("application/octet-stream")) }
     btnPickHdd.setOnClickListener { pickHdd.launch(arrayOf("application/x-qcow2", "application/octet-stream")) }
+    btnPickDisc.setOnClickListener { pickDisc.launch(arrayOf("*/*")) }
 
     btnBack.setOnClickListener { showStep(currentStep - 1) }
     btnNext.setOnClickListener {
-      if (currentStep < 2) {
+      if (currentStep < pages.size - 1) {
         showStep(currentStep + 1)
       } else {
         finishSetup()
@@ -148,58 +231,77 @@ class SetupWizardActivity : AppCompatActivity() {
     updateMcpxSelection()
     updateFlashSelection()
     updateHddSelection()
+    updateDiscSelection()
 
-    showStep(0)
+    val startStep = if (coreReady && !discReady) pages.size - 1 else 0
+    showStep(startStep)
   }
 
   private fun showStep(step: Int) {
-    currentStep = step.coerceIn(0, 2)
-    pageMcpx.visibility = if (currentStep == 0) View.VISIBLE else View.GONE
-    pageFlash.visibility = if (currentStep == 1) View.VISIBLE else View.GONE
-    pageHdd.visibility = if (currentStep == 2) View.VISIBLE else View.GONE
-
-    indicatorMcpx.setBackgroundResource(
-      if (currentStep == 0) R.drawable.setup_wizard_indicator_active else R.drawable.setup_wizard_indicator_inactive
-    )
-    indicatorFlash.setBackgroundResource(
-      if (currentStep == 1) R.drawable.setup_wizard_indicator_active else R.drawable.setup_wizard_indicator_inactive
-    )
-    indicatorHdd.setBackgroundResource(
-      if (currentStep == 2) R.drawable.setup_wizard_indicator_active else R.drawable.setup_wizard_indicator_inactive
-    )
+    val lastIndex = (pages.size - 1).coerceAtLeast(0)
+    currentStep = step.coerceIn(0, lastIndex)
+    pages.forEachIndexed { index, view ->
+      view.visibility = if (currentStep == index) View.VISIBLE else View.GONE
+    }
+    indicators.forEachIndexed { index, view ->
+      view.setBackgroundResource(
+        if (currentStep == index) {
+          R.drawable.setup_wizard_indicator_active
+        } else {
+          R.drawable.setup_wizard_indicator_inactive
+        }
+      )
+    }
 
     updateButtons()
   }
 
   private fun updateButtons() {
     btnBack.visibility = if (currentStep == 0) View.INVISIBLE else View.VISIBLE
-    btnNext.text = getString(if (currentStep == 2) R.string.setup_finish else R.string.setup_next)
+    btnNext.text =
+      getString(if (currentStep == pages.size - 1) R.string.setup_finish else R.string.setup_next)
+    if (isCopying) {
+      btnNext.isEnabled = false
+      btnBack.isEnabled = false
+      return
+    }
+    btnBack.isEnabled = true
     btnNext.isEnabled =
       when (currentStep) {
-        0 -> mcpxUri != null
-        1 -> flashUri != null
-        else -> hddUri != null
+        0 -> isFileReady(mcpxPath)
+        1 -> isFileReady(flashPath)
+        2 -> isFileReady(hddPath)
+        else -> true
       }
   }
 
   private fun updateMcpxSelection() {
-    val value = mcpxUri?.toString() ?: getString(R.string.setup_not_set)
+    val value = mcpxPath ?: mcpxUri?.toString() ?: getString(R.string.setup_not_set)
     mcpxPathText.text = getString(R.string.setup_mcpx_value, value)
   }
 
   private fun updateFlashSelection() {
-    val value = flashUri?.toString() ?: getString(R.string.setup_not_set)
+    val value = flashPath ?: flashUri?.toString() ?: getString(R.string.setup_not_set)
     flashPathText.text = getString(R.string.setup_flash_value, value)
   }
 
   private fun updateHddSelection() {
-    val value = hddUri?.toString() ?: getString(R.string.setup_not_set)
+    val value = hddPath ?: hddUri?.toString() ?: getString(R.string.setup_not_set)
     hddPathText.text = getString(R.string.setup_hdd_value, value)
+  }
+
+  private fun updateDiscSelection() {
+    val value = dvdPath ?: dvdUri?.toString() ?: getString(R.string.setup_not_set)
+    discPathText.text = getString(R.string.setup_disc_value, value)
   }
 
 
   private fun finishSetup() {
-    prefs.edit().putBoolean("setup_complete", true).apply()
+    val skipGamePicker = !isFileReady(dvdPath)
+    prefs.edit()
+      .putBoolean("setup_complete", true)
+      .putBoolean("skip_game_picker", skipGamePicker)
+      .apply()
     goToMain()
   }
 
@@ -216,14 +318,73 @@ class SetupWizardActivity : AppCompatActivity() {
     }
   }
 
+  private fun loadLocalPath(key: String): String? {
+    val path = prefs.getString(key, null) ?: return null
+    if (!File(path).isFile) {
+      prefs.edit().remove(key).apply()
+      return null
+    }
+    return path
+  }
+
+  private fun isFileReady(path: String?): Boolean {
+    return path != null && File(path).isFile
+  }
+
+  private fun copyUriAsync(uri: Uri, destName: String, onDone: (String?) -> Unit) {
+    if (isCopying) return
+    isCopying = true
+    updateButtons()
+    Toast.makeText(this, "Copying file...", Toast.LENGTH_SHORT).show()
+    Thread {
+      val path = copyUriToAppStorage(uri, destName)
+      runOnUiThread {
+        isCopying = false
+        onDone(path)
+      }
+    }.start()
+  }
+
+  private fun copyUriToAppStorage(uri: Uri, destName: String): String? {
+    val base = getExternalFilesDir(null) ?: filesDir
+    val dir = File(base, "x1box")
+    if (!dir.exists() && !dir.mkdirs()) {
+      Log.e("xemu-android", "Failed to create ${dir.absolutePath}")
+      return null
+    }
+    val target = File(dir, destName)
+    return try {
+      contentResolver.openInputStream(uri)?.use { input ->
+        FileOutputStream(target).use { output ->
+          input.copyTo(output)
+        }
+      } ?: return null
+      target.absolutePath
+    } catch (e: IOException) {
+      Log.e("xemu-android", "Copy failed for $destName", e)
+      null
+    }
+  }
+
   private fun isAllowedExtension(uri: Uri, allowed: Set<String>): Boolean {
+    return isAllowedFile(uri, allowed, emptySet())
+  }
+
+  private fun isAllowedFile(uri: Uri, allowedExts: Set<String>, allowedMimes: Set<String>): Boolean {
     val name = contentResolver.query(uri, null, null, null, null)?.use { cursor ->
       val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
       if (nameIndex >= 0 && cursor.moveToFirst()) cursor.getString(nameIndex) else null
     } ?: uri.lastPathSegment
-    val ext = name?.substringAfterLast('.', "")?.lowercase().orEmpty()
-    if (ext.isEmpty()) return false
-    return allowed.contains(ext)
+    val lowerName = name?.lowercase().orEmpty()
+    if (lowerName.endsWith(".xiso.iso")) return true
+    val ext = lowerName.substringAfterLast('.', "")
+    if (ext.isNotEmpty() && allowedExts.contains(ext)) return true
+    val mime = contentResolver.getType(uri)?.lowercase()
+    if (mime != null) {
+      if (allowedMimes.contains(mime)) return true
+      if (mime.startsWith("application/x-iso")) return true
+    }
+    return false
   }
 
   private fun showExtensionError(allowed: Set<String>) {

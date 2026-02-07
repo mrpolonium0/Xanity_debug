@@ -27,12 +27,189 @@
 
 #include <math.h>
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#include "qemu/thread.h"
+#include <string.h>
+#include "system/memory.h"
+#endif
+
+#ifdef __ANDROID__
+static void check_gl_error_android(const char *context)
+{
+    GLenum err;
+    int count = 0;
+    while ((err = glGetError()) != GL_NO_ERROR) {
+        fprintf(stderr, "GL error 0x%X in %s\n", err, context);
+        if (++count >= 10) {
+            break;
+        }
+    }
+}
+#define GL_ASSERT_NO_ERROR(context) check_gl_error_android(context)
+#else
+#define GL_ASSERT_NO_ERROR(context) assert(glGetError() == GL_NO_ERROR)
+#endif
+
+#ifdef __ANDROID__
+static QemuMutex g_android_readback_mutex;
+static bool g_android_readback_mutex_init = false;
+static uint8_t *g_android_readback_buf = NULL;
+static size_t g_android_readback_size = 0;
+static int g_android_readback_w = 0;
+static int g_android_readback_h = 0;
+static bool g_android_readback_ready = false;
+
+static bool android_force_cpu_blit(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("XEMU_ANDROID_FORCE_CPU_BLIT");
+        if (!env) {
+            cached = 1;
+        } else if (!strcmp(env, "1") || !strcmp(env, "true") ||
+                   !strcmp(env, "TRUE")) {
+            cached = 1;
+        } else {
+            cached = 0;
+        }
+    }
+    return cached == 1;
+}
+
+static bool android_readback_is_black(const uint8_t *buf, size_t size,
+                                      int width, int height)
+{
+    if (!buf || size < 4 || width <= 0 || height <= 0) {
+        return false;
+    }
+    size_t tl_off = 0;
+    size_t mid_off = ((size_t)(height / 2) * (size_t)width +
+                      (size_t)(width / 2)) * 4;
+    size_t br_off = ((size_t)(height - 1) * (size_t)width +
+                     (size_t)(width - 1)) * 4;
+    uint32_t tl = 0, mid = 0, br = 0;
+    if (tl_off + 4 <= size) {
+        memcpy(&tl, buf + tl_off, sizeof(tl));
+    }
+    if (mid_off + 4 <= size) {
+        memcpy(&mid, buf + mid_off, sizeof(mid));
+    }
+    if (br_off + 4 <= size) {
+        memcpy(&br, buf + br_off, sizeof(br));
+    }
+    bool black_tl = (tl == 0x00000000u || tl == 0xff000000u);
+    bool black_mid = (mid == 0x00000000u || mid == 0xff000000u);
+    bool black_br = (br == 0x00000000u || br == 0xff000000u);
+    return black_tl && black_mid && black_br;
+}
+
+static void android_store_readback(NV2AState *d, SurfaceBinding *surface,
+                                   int width, int height)
+{
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+    if (!g_android_readback_mutex_init) {
+        qemu_mutex_init(&g_android_readback_mutex);
+        g_android_readback_mutex_init = true;
+    }
+    size_t needed = (size_t)width * (size_t)height * 4;
+    qemu_mutex_lock(&g_android_readback_mutex);
+    if (needed > g_android_readback_size) {
+        g_android_readback_buf = g_realloc(g_android_readback_buf, needed);
+        g_android_readback_size = needed;
+    }
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE,
+                 g_android_readback_buf);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    bool display_black = android_readback_is_black(
+        g_android_readback_buf, g_android_readback_size, width, height);
+    bool used_surface = false;
+    if (display_black && d && surface && surface->gl_buffer) {
+        PGRAPHState *pg = &d->pgraph;
+        PGRAPHGLState *r = pg->gl_renderer_state;
+        unsigned int surf_w = surface->width;
+        unsigned int surf_h = surface->height;
+        pgraph_apply_scaling_factor(pg, &surf_w, &surf_h);
+        if (surf_w > 0 && surf_h > 0) {
+            size_t surf_needed = (size_t)surf_w * (size_t)surf_h * 4;
+            if (surf_needed > g_android_readback_size) {
+                g_android_readback_buf = g_realloc(g_android_readback_buf,
+                                                   surf_needed);
+                g_android_readback_size = surf_needed;
+            }
+            GLint prev_fbo = 0;
+            glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+            glBindFramebuffer(GL_FRAMEBUFFER, r->disp_rndr.fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_2D, surface->gl_buffer, 0);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(0, 0, surf_w, surf_h, GL_RGBA, GL_UNSIGNED_BYTE,
+                         g_android_readback_buf);
+            glPixelStorei(GL_PACK_ALIGNMENT, 4);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_2D, r->gl_display_buffer, 0);
+            glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo);
+            g_android_readback_w = (int)surf_w;
+            g_android_readback_h = (int)surf_h;
+            used_surface = true;
+            static unsigned int surf_log = 0;
+            if ((surf_log++ % 120) == 0) {
+                __android_log_print(ANDROID_LOG_WARN, "xemu-android",
+                                    "android readback: display black, using surface vram=0x%x size=%ux%u",
+                                    (unsigned)surface->vram_addr,
+                                    surf_w, surf_h);
+            }
+        }
+    }
+    if (!used_surface) {
+        g_android_readback_w = width;
+        g_android_readback_h = height;
+    }
+    g_android_readback_ready = true;
+    qemu_mutex_unlock(&g_android_readback_mutex);
+}
+
+bool nv2a_android_copy_readback(uint8_t **buffer, size_t *buffer_size,
+                                int *width, int *height)
+{
+    if (!android_force_cpu_blit()) {
+        return false;
+    }
+    if (!g_android_readback_mutex_init || !g_android_readback_ready) {
+        return false;
+    }
+    qemu_mutex_lock(&g_android_readback_mutex);
+    size_t needed = (size_t)g_android_readback_w * (size_t)g_android_readback_h * 4;
+    if (!g_android_readback_buf || needed == 0) {
+        qemu_mutex_unlock(&g_android_readback_mutex);
+        return false;
+    }
+    if (*buffer_size < needed) {
+        *buffer = g_realloc(*buffer, needed);
+        *buffer_size = needed;
+    }
+    memcpy(*buffer, g_android_readback_buf, needed);
+    *width = g_android_readback_w;
+    *height = g_android_readback_h;
+    qemu_mutex_unlock(&g_android_readback_mutex);
+    return true;
+}
+
+#endif
+
 void pgraph_gl_init_display(NV2AState *d)
 {
     struct PGRAPHState *pg = &d->pgraph;
     PGRAPHGLState *r = pg->gl_renderer_state;
 
+#ifdef __ANDROID__
+    glo_set_current(g_nv2a_context_render);
+#else
     glo_set_current(g_nv2a_context_display);
+#endif
 
     glGenTextures(1, &r->gl_display_buffer);
     r->gl_display_buffer_internal_format = 0;
@@ -42,7 +219,12 @@ void pgraph_gl_init_display(NV2AState *d)
     r->gl_display_buffer_type = 0;
 
     const char *vs =
+#ifdef __ANDROID__
+        "#version 300 es\n"
+        "precision highp float;\n"
+#else
         "#version 330\n"
+#endif
         "void main()\n"
         "{\n"
         "    float x = -1.0 + float((gl_VertexID & 1) << 2);\n"
@@ -52,7 +234,13 @@ void pgraph_gl_init_display(NV2AState *d)
     /* FIXME: improve interlace handling, pvideo */
 
     const char *fs =
+#ifdef __ANDROID__
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "precision highp int;\n"
+#else
         "#version 330\n"
+#endif
         "uniform sampler2D tex;\n"
         "uniform bool pvideo_enable;\n"
         "uniform sampler2D pvideo_tex;\n"
@@ -63,12 +251,22 @@ void pgraph_gl_init_display(NV2AState *d)
         "uniform vec3 pvideo_color_key;\n"
         "uniform vec2 display_size;\n"
         "uniform float line_offset;\n"
+        "uniform bool clip_enable;\n"
+        "uniform vec4 clip_rect;\n"
         "layout(location = 0) out vec4 out_Color;\n"
         "void main()\n"
         "{\n"
-        "    vec2 texCoord = gl_FragCoord.xy/display_size;\n"
-        "    float rel = display_size.y/textureSize(tex, 0).y/line_offset;\n"
-        "    texCoord.y = rel*(1.0f - texCoord.y);\n"
+        "    vec2 uv = gl_FragCoord.xy/display_size;\n"
+        "    vec2 texSize = vec2(textureSize(tex, 0));\n"
+        "    vec2 texCoord;\n"
+        "    if (clip_enable) {\n"
+        "        vec2 pixel = vec2(clip_rect.x + uv.x * clip_rect.z,\n"
+        "                         clip_rect.y + (1.0 - uv.y) * clip_rect.w);\n"
+        "        texCoord = pixel / texSize;\n"
+        "    } else {\n"
+        "        float rel = display_size.y/texSize.y/line_offset;\n"
+        "        texCoord = vec2(uv.x, rel*(1.0f - uv.y));\n"
+        "    }\n"
         "    out_Color.rgba = texture(tex, texCoord);\n"
         "    if (pvideo_enable) {\n"
         "        vec2 screenCoord = gl_FragCoord.xy - 0.5;\n"
@@ -77,7 +275,7 @@ void pgraph_gl_init_display(NV2AState *d)
         "                           greaterThan(screenCoord, output_region.zw));\n"
         "        if (!any(clip) && (!pvideo_color_key_enable || out_Color.rgb == pvideo_color_key)) {\n"
         "            vec2 out_xy = (screenCoord - pvideo_pos.xy) * pvideo_scale.z;\n"
-        "            vec2 in_st = (pvideo_in_pos + out_xy * pvideo_scale.xy) / textureSize(pvideo_tex, 0);\n"
+        "            vec2 in_st = (pvideo_in_pos + out_xy * pvideo_scale.xy) / vec2(textureSize(pvideo_tex, 0));\n"
         "            in_st.y *= -1.0;\n"
         "            out_Color.rgba = texture(pvideo_tex, in_st);\n"
         "        }\n"
@@ -95,6 +293,8 @@ void pgraph_gl_init_display(NV2AState *d)
     r->disp_rndr.pvideo_color_key_loc = glGetUniformLocation(r->disp_rndr.prog, "pvideo_color_key");
     r->disp_rndr.display_size_loc = glGetUniformLocation(r->disp_rndr.prog, "display_size");
     r->disp_rndr.line_offset_loc = glGetUniformLocation(r->disp_rndr.prog, "line_offset");
+    r->disp_rndr.clip_rect_loc = glGetUniformLocation(r->disp_rndr.prog, "clip_rect");
+    r->disp_rndr.clip_enable_loc = glGetUniformLocation(r->disp_rndr.prog, "clip_enable");
 
     glGenVertexArrays(1, &r->disp_rndr.vao);
     glBindVertexArray(r->disp_rndr.vao);
@@ -103,7 +303,7 @@ void pgraph_gl_init_display(NV2AState *d)
     glBufferData(GL_ARRAY_BUFFER, 0, NULL, GL_STATIC_DRAW);
     glGenFramebuffers(1, &r->disp_rndr.fbo);
     glGenTextures(1, &r->disp_rndr.pvideo_tex);
-    assert(glGetError() == GL_NO_ERROR);
+    GL_ASSERT_NO_ERROR("pgraph_gl_init_display");
 
     glo_set_current(g_nv2a_context_render);
 }
@@ -112,7 +312,11 @@ void pgraph_gl_finalize_display(PGRAPHState *pg)
 {
     PGRAPHGLState *r = pg->gl_renderer_state;
 
+#ifdef __ANDROID__
+    glo_set_current(g_nv2a_context_render);
+#else
     glo_set_current(g_nv2a_context_display);
+#endif
 
     glDeleteTextures(1, &r->gl_display_buffer);
     r->gl_display_buffer = 0;
@@ -285,7 +489,10 @@ static void render_display(NV2AState *d, SurfaceBinding *surface)
     VGADisplayParams vga_display_params;
     d->vga.get_resolution(&d->vga, (int*)&width, (int*)&height);
     d->vga.get_params(&d->vga, &vga_display_params);
-    int line_offset = vga_display_params.line_offset ? surface->pitch / vga_display_params.line_offset : 1;
+    float line_offset = vga_display_params.line_offset
+                            ? (float)surface->pitch /
+                                  (float)vga_display_params.line_offset
+                            : 1.0f;
 
     /* Adjust viewport height for interlaced mode, used only in 1080i */
     if (d->vga.cr[NV_PRMCIO_INTERLACE_MODE] != NV_PRMCIO_INTERLACE_MODE_DISABLED) {
@@ -297,12 +504,23 @@ static void render_display(NV2AState *d, SurfaceBinding *surface)
     glBindFramebuffer(GL_FRAMEBUFFER, r->disp_rndr.fbo);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, r->gl_display_buffer);
+
+    GLint disp_ifmt = surface->fmt.gl_internal_format;
+    GLenum disp_fmt = surface->fmt.gl_format;
+    GLenum disp_type = surface->fmt.gl_type;
+#ifdef __ANDROID__
+    // Use a GLES-compatible renderable format for the display buffer.
+    disp_ifmt = GL_RGBA8;
+    disp_fmt = GL_RGBA;
+    disp_type = GL_UNSIGNED_BYTE;
+#endif
+
     bool recreate = (
-        surface->fmt.gl_internal_format != r->gl_display_buffer_internal_format
+        disp_ifmt != r->gl_display_buffer_internal_format
         || width != r->gl_display_buffer_width
         || height != r->gl_display_buffer_height
-        || surface->fmt.gl_format != r->gl_display_buffer_format
-        || surface->fmt.gl_type != r->gl_display_buffer_type
+        || disp_fmt != r->gl_display_buffer_format
+        || disp_type != r->gl_display_buffer_type
         );
 
     if (recreate) {
@@ -317,11 +535,11 @@ static void render_display(NV2AState *d, SurfaceBinding *surface)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        r->gl_display_buffer_internal_format = surface->fmt.gl_internal_format;
+        r->gl_display_buffer_internal_format = disp_ifmt;
         r->gl_display_buffer_width = width;
         r->gl_display_buffer_height = height;
-        r->gl_display_buffer_format = surface->fmt.gl_format;
-        r->gl_display_buffer_type = surface->fmt.gl_type;
+        r->gl_display_buffer_format = disp_fmt;
+        r->gl_display_buffer_type = disp_type;
         glTexImage2D(GL_TEXTURE_2D, 0,
             r->gl_display_buffer_internal_format,
             r->gl_display_buffer_width,
@@ -336,15 +554,72 @@ static void render_display(NV2AState *d, SurfaceBinding *surface)
         GL_TEXTURE_2D, r->gl_display_buffer, 0);
     GLenum DrawBuffers[1] = {GL_COLOR_ATTACHMENT0};
     glDrawBuffers(1, DrawBuffers);
-    assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+    GLenum fb_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (fb_status != GL_FRAMEBUFFER_COMPLETE) {
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                            "render_display: framebuffer incomplete 0x%X (fmt=%d ifmt=%d type=%d size=%ux%u)",
+                            fb_status,
+                            r->gl_display_buffer_format,
+                            r->gl_display_buffer_internal_format,
+                            r->gl_display_buffer_type,
+                            r->gl_display_buffer_width,
+                            r->gl_display_buffer_height);
+#else
+        fprintf(stderr,
+                "render_display: framebuffer incomplete 0x%X (fmt=%d ifmt=%d type=%d size=%ux%u)\n",
+                fb_status,
+                r->gl_display_buffer_format,
+                r->gl_display_buffer_internal_format,
+                r->gl_display_buffer_type,
+                r->gl_display_buffer_width,
+                r->gl_display_buffer_height);
+#endif
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, 0, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return;
+    }
 
     glBindTexture(GL_TEXTURE_2D, surface->gl_buffer);
+#ifdef __ANDROID__
+    bool clip_enable = false;
+    float clip_x = 0.0f;
+    float clip_y = 0.0f;
+    float clip_w = 0.0f;
+    float clip_h = 0.0f;
+    if (android_force_cpu_blit()) {
+        clip_x = (float)surface->shape.clip_x;
+        clip_y = (float)surface->shape.clip_y;
+        clip_w = (float)surface->shape.clip_width;
+        clip_h = (float)surface->shape.clip_height;
+        if (clip_w > 0.0f && clip_h > 0.0f) {
+            clip_enable = true;
+            static unsigned int clip_log = 0;
+            if ((clip_log++ % 120) == 0) {
+                GLint tex_w = 0;
+                GLint tex_h = 0;
+                glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tex_w);
+                glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &tex_h);
+                __android_log_print(ANDROID_LOG_WARN, "xemu-android",
+                                    "render_display: clip rect x=%g y=%g w=%g h=%g tex=%dx%d disp=%ux%u",
+                                    clip_x, clip_y, clip_w, clip_h,
+                                    (int)tex_w, (int)tex_h,
+                                    width, height);
+            }
+        }
+    }
+#endif
     glBindVertexArray(r->disp_rndr.vao);
     glBindBuffer(GL_ARRAY_BUFFER, r->disp_rndr.vbo);
     glUseProgram(r->disp_rndr.prog);
     glProgramUniform1i(r->disp_rndr.prog, r->disp_rndr.tex_loc, 0);
     glUniform2f(r->disp_rndr.display_size_loc, width, height);
     glUniform1f(r->disp_rndr.line_offset_loc, line_offset);
+#ifdef __ANDROID__
+    glUniform1i(r->disp_rndr.clip_enable_loc, clip_enable ? 1 : 0);
+    glUniform4f(r->disp_rndr.clip_rect_loc, clip_x, clip_y, clip_w, clip_h);
+#endif
     render_display_pvideo_overlay(d);
 
     glViewport(0, 0, width, height);
@@ -358,6 +633,12 @@ static void render_display(NV2AState *d, SurfaceBinding *surface)
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glDrawArrays(GL_TRIANGLES, 0, 3);
+
+#ifdef __ANDROID__
+    if (android_force_cpu_blit()) {
+        android_store_readback(d, surface, width, height);
+    }
+#endif
 
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
         GL_TEXTURE_2D, 0, 0);
@@ -377,7 +658,16 @@ void pgraph_gl_sync(NV2AState *d)
     VGADisplayParams vga_display_params;
     d->vga.get_params(&d->vga, &vga_display_params);
 
-    SurfaceBinding *surface = pgraph_gl_surface_get_within(d, d->pcrtc.start + vga_display_params.line_offset);
+    PGRAPHState *pg = &d->pgraph;
+    unsigned int disp_w = 0;
+    unsigned int disp_h = 0;
+    d->vga.get_resolution(&d->vga, (int *)&disp_w, (int *)&disp_h);
+    if (d->vga.cr[NV_PRMCIO_INTERLACE_MODE] != NV_PRMCIO_INTERLACE_MODE_DISABLED) {
+        disp_h *= 2;
+    }
+
+    SurfaceBinding *surface =
+        pgraph_gl_surface_get_within(d, d->pcrtc.start + vga_display_params.line_offset);
     if (surface == NULL || !surface->color || !surface->width || !surface->height) {
         qemu_event_set(&d->pgraph.sync_complete);
         return;
@@ -386,18 +676,40 @@ void pgraph_gl_sync(NV2AState *d)
     /* FIXME: Sanity check surface dimensions */
 
     /* Wait for queued commands to complete */
+#ifdef __ANDROID__
+    bool force_upload = !tcg_enabled();
+    if (android_force_cpu_blit() && surface->draw_time == 0) {
+        force_upload = true;
+        static unsigned int no_draw_log = 0;
+        if ((no_draw_log++ % 120) == 0) {
+            __android_log_print(ANDROID_LOG_WARN, "xemu-android",
+                                "pgraph_gl_sync: forcing upload (no draws yet) vram=0x%x",
+                                (unsigned)surface->vram_addr);
+        }
+    }
+    pgraph_gl_upload_surface_data(d, surface, force_upload);
+#else
     pgraph_gl_upload_surface_data(d, surface, !tcg_enabled());
+#endif
     gl_fence();
-    assert(glGetError() == GL_NO_ERROR);
+    GL_ASSERT_NO_ERROR("pgraph_gl_sync: upload fence");
 
+    /* Render framebuffer */
+#ifdef __ANDROID__
+    glo_set_current(g_nv2a_context_render);
+    render_display(d, surface);
+    gl_fence();
+    GL_ASSERT_NO_ERROR("pgraph_gl_sync: render fence");
+#else
     /* Render framebuffer in display context */
     glo_set_current(g_nv2a_context_display);
     render_display(d, surface);
     gl_fence();
-    assert(glGetError() == GL_NO_ERROR);
+    GL_ASSERT_NO_ERROR("pgraph_gl_sync: render fence");
 
     /* Switch back to original context */
     glo_set_current(g_nv2a_context_render);
+#endif
 
     qatomic_set(&d->pgraph.sync_pending, false);
     qemu_event_set(&d->pgraph.sync_complete);
@@ -413,6 +725,13 @@ int pgraph_gl_get_framebuffer_surface(NV2AState *d)
 
     VGADisplayParams vga_display_params;
     d->vga.get_params(&d->vga, &vga_display_params);
+
+    unsigned int disp_w = 0;
+    unsigned int disp_h = 0;
+    d->vga.get_resolution(&d->vga, (int *)&disp_w, (int *)&disp_h);
+    if (d->vga.cr[NV_PRMCIO_INTERLACE_MODE] != NV_PRMCIO_INTERLACE_MODE_DISABLED) {
+        disp_h *= 2;
+    }
 
     SurfaceBinding *surface = pgraph_gl_surface_get_within(
         d, d->pcrtc.start + vga_display_params.line_offset);

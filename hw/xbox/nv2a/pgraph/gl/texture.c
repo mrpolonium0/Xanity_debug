@@ -150,11 +150,15 @@ static void apply_texture_parameters(PGRAPHGLState *r,
                         pgraph_texture_mag_filter_gl_map[mag_filter]);
         binding->mag_filter = mag_filter;
     }
+#ifndef __ANDROID__
     if (lod_bias != binding->lod_bias) {
         binding->lod_bias = lod_bias;
         glTexParameterf(binding->gl_target, GL_TEXTURE_LOD_BIAS,
                         pgraph_convert_lod_bias_to_float(lod_bias));
     }
+#else
+    binding->lod_bias = lod_bias;
+#endif
 
     /* Texture wrapping */
     assert(addru < ARRAY_SIZE(pgraph_texture_addr_gl_map));
@@ -217,7 +221,9 @@ void pgraph_gl_bind_textures(NV2AState *d)
         glActiveTexture(GL_TEXTURE0 + i);
         if (!enabled) {
             glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+#ifndef __ANDROID__
             glBindTexture(GL_TEXTURE_1D, 0);
+#endif
             glBindTexture(GL_TEXTURE_2D, 0);
             glBindTexture(GL_TEXTURE_3D, 0);
             continue;
@@ -660,7 +666,13 @@ static TextureBinding* generate_texture(const TextureShape s,
             assert(s.dimensionality == 2);
         } else {
             switch(s.dimensionality) {
-            case 1: gl_target = GL_TEXTURE_1D; break;
+            case 1:
+#ifdef __ANDROID__
+                gl_target = GL_TEXTURE_2D;
+#else
+                gl_target = GL_TEXTURE_1D;
+#endif
+                break;
             case 2: gl_target = GL_TEXTURE_2D; break;
             case 3: gl_target = GL_TEXTURE_3D; break;
             default:

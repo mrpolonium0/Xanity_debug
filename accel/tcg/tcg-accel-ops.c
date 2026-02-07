@@ -247,3 +247,9 @@ static void tcg_accel_ops_register_types(void)
     type_register_static(&tcg_accel_ops_type);
 }
 type_init(tcg_accel_ops_register_types);
+
+#ifdef __ANDROID__
+void xemu_android_force_tcg_accel_ops_link(void)
+{
+}
+#endif

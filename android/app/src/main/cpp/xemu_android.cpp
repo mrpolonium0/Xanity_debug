@@ -3,38 +3,479 @@
 #include <SDL_system.h>
 
 #include <GLES3/gl3.h>
+#include <toml++/toml.h>
 
 #include <android/log.h>
+#include <jni.h>
+
+#include <cstdio>
+#include <fstream>
+#include <string>
+#include <vector>
+#include <sys/stat.h>
+#include <errno.h>
+
+#include "xemu-settings.h"
 
 namespace {
 constexpr const char* kLogTag = "xemu-android";
-}
-
-extern "C" int xemu_android_main(int argc, char** argv) __attribute__((weak));
+constexpr const char* kPrefsName = "x1box_prefs";
 
 static void LogInfo(const char* msg) {
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "%s", msg);
 }
 
-extern "C" int SDL_main(int argc, char* argv[]) {
-  if (xemu_android_main) {
-    return xemu_android_main(argc, argv);
+static void LogInfoFmt(const char* fmt, const char* detail) {
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, fmt, detail);
+}
+
+static void LogInfoInt(const char* fmt, int value) {
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, fmt, value);
+}
+
+static void LogError(const char* msg) {
+  __android_log_print(ANDROID_LOG_ERROR, kLogTag, "%s", msg);
+}
+
+static void LogErrorInt(const char* fmt, int value) {
+  __android_log_print(ANDROID_LOG_ERROR, kLogTag, fmt, value);
+}
+
+static void LogErrorFmt(const char* fmt, const char* detail) {
+  __android_log_print(ANDROID_LOG_ERROR, kLogTag, fmt, detail);
+}
+
+static bool EnsureDirExists(const std::string& path) {
+  if (path.empty()) return false;
+  if (mkdir(path.c_str(), 0755) == 0) return true;
+  return errno == EEXIST;
+}
+
+static bool FileExists(const std::string& path) {
+  if (path.empty()) return false;
+  struct stat st {};
+  return stat(path.c_str(), &st) == 0;
+}
+
+static JNIEnv* GetEnv() {
+  return static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+}
+
+static jobject GetActivity(JNIEnv* env) {
+  (void)env;
+  return reinterpret_cast<jobject>(SDL_AndroidGetActivity());
+}
+
+static bool HasException(JNIEnv* env, const char* context) {
+  if (!env->ExceptionCheck()) return false;
+  env->ExceptionDescribe();
+  env->ExceptionClear();
+  LogErrorFmt("JNI exception in %s", context);
+  return true;
+}
+
+static std::string JStringToString(JNIEnv* env, jstring value) {
+  if (!value) return {};
+  const char* utf = env->GetStringUTFChars(value, nullptr);
+  if (!utf) return {};
+  std::string out(utf);
+  env->ReleaseStringUTFChars(value, utf);
+  return out;
+}
+
+static std::string GetPrefString(JNIEnv* env, jobject activity, const char* key) {
+  jclass activityClass = env->GetObjectClass(activity);
+  jmethodID getPrefs = env->GetMethodID(activityClass, "getSharedPreferences",
+                                        "(Ljava/lang/String;I)Landroid/content/SharedPreferences;");
+  if (!getPrefs) return {};
+  jstring prefsName = env->NewStringUTF(kPrefsName);
+  jobject prefs = env->CallObjectMethod(activity, getPrefs, prefsName, 0);
+  env->DeleteLocalRef(prefsName);
+  if (HasException(env, "getSharedPreferences") || !prefs) return {};
+
+  jclass prefsClass = env->GetObjectClass(prefs);
+  jmethodID getString = env->GetMethodID(
+      prefsClass, "getString", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+  if (!getString) return {};
+
+  jstring jkey = env->NewStringUTF(key);
+  jstring jdefault = nullptr;
+  jstring value = static_cast<jstring>(env->CallObjectMethod(prefs, getString, jkey, jdefault));
+  env->DeleteLocalRef(jkey);
+  if (HasException(env, "SharedPreferences.getString")) return {};
+
+  std::string out = JStringToString(env, value);
+  if (value) env->DeleteLocalRef(value);
+  return out;
+}
+
+static bool CopyUriToPath(JNIEnv* env, jobject activity, const std::string& uriString, const std::string& path) {
+  if (uriString.empty() || path.empty()) return false;
+
+  jclass activityClass = env->GetObjectClass(activity);
+  jmethodID getContentResolver = env->GetMethodID(activityClass, "getContentResolver",
+                                                 "()Landroid/content/ContentResolver;");
+  if (!getContentResolver) return false;
+  jobject resolver = env->CallObjectMethod(activity, getContentResolver);
+  if (HasException(env, "getContentResolver") || !resolver) return false;
+
+  jclass uriClass = env->FindClass("android/net/Uri");
+  jmethodID parse = env->GetStaticMethodID(uriClass, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
+  jstring juri = env->NewStringUTF(uriString.c_str());
+  jobject uri = env->CallStaticObjectMethod(uriClass, parse, juri);
+  env->DeleteLocalRef(juri);
+  if (HasException(env, "Uri.parse") || !uri) return false;
+
+  jclass resolverClass = env->GetObjectClass(resolver);
+  jmethodID openInputStream = env->GetMethodID(
+      resolverClass, "openInputStream", "(Landroid/net/Uri;)Ljava/io/InputStream;");
+  jobject inputStream = env->CallObjectMethod(resolver, openInputStream, uri);
+  if (HasException(env, "openInputStream") || !inputStream) return false;
+
+  jclass fosClass = env->FindClass("java/io/FileOutputStream");
+  jmethodID fosCtor = env->GetMethodID(fosClass, "<init>", "(Ljava/lang/String;)V");
+  jstring jpath = env->NewStringUTF(path.c_str());
+  jobject outputStream = env->NewObject(fosClass, fosCtor, jpath);
+  env->DeleteLocalRef(jpath);
+  if (HasException(env, "FileOutputStream.<init>") || !outputStream) return false;
+
+  jclass inputClass = env->GetObjectClass(inputStream);
+  jclass outputClass = env->GetObjectClass(outputStream);
+  jmethodID readMethod = env->GetMethodID(inputClass, "read", "([B)I");
+  jmethodID closeInput = env->GetMethodID(inputClass, "close", "()V");
+  jmethodID writeMethod = env->GetMethodID(outputClass, "write", "([BII)V");
+  jmethodID closeOutput = env->GetMethodID(outputClass, "close", "()V");
+  if (!readMethod || !writeMethod) return false;
+
+  const int kBufferSize = 64 * 1024;
+  jbyteArray buffer = env->NewByteArray(kBufferSize);
+  while (true) {
+    jint read = env->CallIntMethod(inputStream, readMethod, buffer);
+    if (HasException(env, "InputStream.read")) break;
+    if (read <= 0) break;
+    env->CallVoidMethod(outputStream, writeMethod, buffer, 0, read);
+    if (HasException(env, "OutputStream.write")) break;
+  }
+  env->DeleteLocalRef(buffer);
+  env->CallVoidMethod(inputStream, closeInput);
+  env->CallVoidMethod(outputStream, closeOutput);
+  HasException(env, "close streams");
+  return true;
+}
+
+struct SetupFiles {
+  std::string mcpx;
+  std::string flash;
+  std::string hdd;
+  std::string dvd;
+  std::string eeprom;
+  std::string config_path;
+};
+
+static bool WriteConfigToml(const std::string& config_path,
+                            const std::string& mcpx,
+                            const std::string& flash,
+                            const std::string& hdd,
+                            const std::string& dvd,
+                            const std::string& eeprom) {
+  if (config_path.empty()) return false;
+  toml::table tbl;
+
+  if (FileExists(config_path)) {
+    try {
+      tbl = toml::parse_file(config_path);
+    } catch (const toml::parse_error&) {
+      // Ignore parse errors; we'll rewrite a clean config.
+    }
   }
 
+  auto EnsureTable = [](toml::table& parent, std::string_view key) -> toml::table* {
+    if (auto* node = parent.get(key)) {
+      if (auto* existing = node->as_table()) {
+        return existing;
+      }
+    }
+    parent.insert_or_assign(key, toml::table{});
+    return parent.get(key)->as_table();
+  };
+
+  toml::table* general = EnsureTable(tbl, "general");
+  toml::table* display = EnsureTable(tbl, "display");
+  toml::table* android = EnsureTable(tbl, "android");
+  toml::table* sys = EnsureTable(tbl, "sys");
+  toml::table* files = EnsureTable(*sys, "files");
+  if (!general || !display || !android || !sys || !files) {
+    LogErrorFmt("Failed to build config tables at %s", config_path.c_str());
+    return false;
+  }
+
+  general->insert_or_assign("show_welcome", false);
+  display->insert_or_assign("renderer", "vulkan");
+  android->insert_or_assign("force_cpu_blit", false);
+
+  files->insert_or_assign("bootrom_path", mcpx);
+  files->insert_or_assign("flashrom_path", flash);
+  files->insert_or_assign("eeprom_path", eeprom);
+  files->insert_or_assign("hdd_path", hdd);
+  files->insert_or_assign("dvd_path", dvd);
+
+  std::ofstream out(config_path, std::ios::binary | std::ios::trunc);
+  if (!out.is_open()) {
+    LogErrorFmt("Failed to write config at %s", config_path.c_str());
+    return false;
+  }
+  out << tbl;
+  out.close();
+  return true;
+}
+
+static SetupFiles SyncSetupFiles() {
+  SetupFiles out{};
+  JNIEnv* env = GetEnv();
+  jobject activity = GetActivity(env);
+  if (!env || !activity) {
+    LogError("JNI environment not ready for setup sync");
+    return out;
+  }
+
+  LogInfo("SyncSetupFiles: start");
+  const char* basePath = SDL_AndroidGetInternalStoragePath();
+  int extState = SDL_AndroidGetExternalStorageState();
+  if (extState & SDL_ANDROID_EXTERNAL_STORAGE_WRITE) {
+    const char* external = SDL_AndroidGetExternalStoragePath();
+    if (external && external[0] != '\0') {
+      basePath = external;
+    }
+  }
+  if (!basePath || basePath[0] == '\0') {
+    LogError("Storage path not available");
+    return out;
+  }
+  LogInfoFmt("SyncSetupFiles: base path %s", basePath);
+
+  std::string base = std::string(basePath) + "/x1box";
+  EnsureDirExists(base);
+  out.eeprom = base + "/eeprom.bin";
+
+  const std::string mcpxPath = GetPrefString(env, activity, "mcpxPath");
+  const std::string flashPath = GetPrefString(env, activity, "flashPath");
+  const std::string hddPath = GetPrefString(env, activity, "hddPath");
+  const std::string dvdPath = GetPrefString(env, activity, "dvdPath");
+  const std::string mcpxUri = GetPrefString(env, activity, "mcpxUri");
+  const std::string flashUri = GetPrefString(env, activity, "flashUri");
+  const std::string hddUri = GetPrefString(env, activity, "hddUri");
+  const std::string dvdUri = GetPrefString(env, activity, "dvdUri");
+
+  LogInfoFmt("Prefs mcpxPath=%s", mcpxPath.c_str());
+  LogInfoFmt("Prefs flashPath=%s", flashPath.c_str());
+  LogInfoFmt("Prefs hddPath=%s", hddPath.c_str());
+  LogInfoFmt("Prefs dvdPath=%s", dvdPath.c_str());
+  LogInfoFmt("Prefs mcpxUri=%s", mcpxUri.c_str());
+  LogInfoFmt("Prefs flashUri=%s", flashUri.c_str());
+  LogInfoFmt("Prefs hddUri=%s", hddUri.c_str());
+  LogInfoFmt("Prefs dvdUri=%s", dvdUri.c_str());
+
+  if (!mcpxPath.empty() && FileExists(mcpxPath)) {
+    out.mcpx = mcpxPath;
+  }
+  if (out.mcpx.empty() && !mcpxUri.empty()) {
+    out.mcpx = base + "/mcpx.bin";
+    if (CopyUriToPath(env, activity, mcpxUri, out.mcpx)) {
+      LogInfo("MCPX ROM synced to app storage");
+    } else {
+      LogError("Failed to sync MCPX ROM");
+    }
+  }
+  if (!flashPath.empty() && FileExists(flashPath)) {
+    out.flash = flashPath;
+  }
+  if (out.flash.empty() && !flashUri.empty()) {
+    out.flash = base + "/flash.bin";
+    if (CopyUriToPath(env, activity, flashUri, out.flash)) {
+      LogInfo("Flash ROM synced to app storage");
+    } else {
+      LogError("Failed to sync flash ROM");
+    }
+  }
+  if (!hddPath.empty() && FileExists(hddPath)) {
+    out.hdd = hddPath;
+  }
+  if (out.hdd.empty() && !hddUri.empty()) {
+    out.hdd = base + "/hdd.img";
+    if (CopyUriToPath(env, activity, hddUri, out.hdd)) {
+      LogInfo("HDD image synced to app storage");
+    } else {
+      LogError("Failed to sync HDD image");
+    }
+  }
+
+  if (!dvdPath.empty() && FileExists(dvdPath)) {
+    out.dvd = dvdPath;
+  }
+  if (out.dvd.empty() && !dvdUri.empty()) {
+    out.dvd = base + "/dvd.iso";
+    if (CopyUriToPath(env, activity, dvdUri, out.dvd)) {
+      LogInfo("DVD image synced to app storage");
+    } else {
+      LogError("Failed to sync DVD image");
+    }
+  }
+
+  out.config_path = base + "/xemu.toml";
+  WriteConfigToml(out.config_path, out.mcpx, out.flash, out.hdd, out.dvd, out.eeprom);
+  LogInfoFmt("SyncSetupFiles: config %s", out.config_path.c_str());
+  LogInfoFmt("Resolved mcpx=%s", out.mcpx.c_str());
+  LogInfoFmt("Resolved flash=%s", out.flash.c_str());
+  LogInfoFmt("Resolved hdd=%s", out.hdd.c_str());
+  LogInfoFmt("Resolved dvd=%s", out.dvd.c_str());
+  LogInfoFmt("Resolved eeprom=%s", out.eeprom.c_str());
+  return out;
+}
+}
+
+extern "C" int xemu_android_main(int argc, char** argv);
+extern "C" void qemu_init(int argc, char** argv);
+extern "C" int (*qemu_main)(void);
+extern "C" void xemu_android_display_preinit(void);
+extern "C" void xemu_android_display_wait_ready(void);
+extern "C" void xemu_android_display_loop(void);
+
+struct QemuLaunchContext {
+  int argc;
+  char** argv;
+};
+
+static int SDLCALL QemuThreadMain(void* data) {
+  auto* ctx = static_cast<QemuLaunchContext*>(data);
+  LogInfoInt("QemuThreadMain: show_welcome=%d", g_config.general.show_welcome ? 1 : 0);
+  LogInfoFmt("QemuThreadMain: bootrom=%s", g_config.sys.files.bootrom_path ? g_config.sys.files.bootrom_path : "(null)");
+  LogInfo("QemuThreadMain: starting");
+  return xemu_android_main(ctx->argc, ctx->argv);
+}
+
+extern "C" int xemu_android_main(int argc, char** argv) {
+  if (!qemu_main) {
+    LogError("xemu core not linked; qemu_main missing");
+    return 1;
+  }
+  LogInfo("xemu_android_main: qemu_init");
+  qemu_init(argc, argv);
+  LogInfo("xemu_android_main: qemu_main");
+  int rc = qemu_main();
+  LogErrorInt("xemu_android_main: qemu_main returned %d", rc);
+  return rc;
+}
+
+extern "C" int SDL_main(int argc, char* argv[]) {
   (void)argc;
   (void)argv;
 
+  LogInfo("SDL_main: start");
   SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
   SDL_DisableScreenSaver();
 
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
     __android_log_print(ANDROID_LOG_ERROR, kLogTag, "SDL_Init failed: %s", SDL_GetError());
     return 1;
   }
 
+  SetupFiles setup = SyncSetupFiles();
+
+  if (!setup.config_path.empty()) {
+    LogInfo("SDL_main: loading config");
+    xemu_settings_set_path(setup.config_path.c_str());
+    if (!xemu_settings_load()) {
+      const char* err = xemu_settings_get_error_message();
+      if (!err) {
+        err = "Failed to load config file";
+      }
+      LogError(err);
+      SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+                               "Failed to load xemu config file",
+                               err,
+                               nullptr);
+      SDL_Quit();
+      return 1;
+    }
+    LogInfo("SDL_main: config loaded");
+    LogInfoInt("Config show_welcome=%d", g_config.general.show_welcome ? 1 : 0);
+    LogInfoFmt("Config bootrom=%s", g_config.sys.files.bootrom_path ? g_config.sys.files.bootrom_path : "(null)");
+    LogInfoFmt("Config flashrom=%s", g_config.sys.files.flashrom_path ? g_config.sys.files.flashrom_path : "(null)");
+    LogInfoFmt("Config hdd=%s", g_config.sys.files.hdd_path ? g_config.sys.files.hdd_path : "(null)");
+    LogInfoFmt("Config dvd=%s", g_config.sys.files.dvd_path ? g_config.sys.files.dvd_path : "(null)");
+    LogInfoFmt("Config eeprom=%s", g_config.sys.files.eeprom_path ? g_config.sys.files.eeprom_path : "(null)");
+
+    // Ensure config strings are non-null and aligned with Android setup paths.
+    if (!setup.mcpx.empty()) {
+      xemu_settings_set_string(&g_config.sys.files.bootrom_path, setup.mcpx.c_str());
+    } else if (!g_config.sys.files.bootrom_path) {
+      xemu_settings_set_string(&g_config.sys.files.bootrom_path, "");
+    }
+    if (!setup.flash.empty()) {
+      xemu_settings_set_string(&g_config.sys.files.flashrom_path, setup.flash.c_str());
+    } else if (!g_config.sys.files.flashrom_path) {
+      xemu_settings_set_string(&g_config.sys.files.flashrom_path, "");
+    }
+    if (!setup.hdd.empty()) {
+      xemu_settings_set_string(&g_config.sys.files.hdd_path, setup.hdd.c_str());
+    } else if (!g_config.sys.files.hdd_path) {
+      xemu_settings_set_string(&g_config.sys.files.hdd_path, "");
+    }
+    if (!setup.dvd.empty()) {
+      xemu_settings_set_string(&g_config.sys.files.dvd_path, setup.dvd.c_str());
+    } else if (!g_config.sys.files.dvd_path) {
+      xemu_settings_set_string(&g_config.sys.files.dvd_path, "");
+    }
+    if (!setup.eeprom.empty()) {
+      xemu_settings_set_string(&g_config.sys.files.eeprom_path, setup.eeprom.c_str());
+    } else if (!g_config.sys.files.eeprom_path) {
+      xemu_settings_set_string(&g_config.sys.files.eeprom_path, "");
+    }
+    g_config.display.renderer = CONFIG_DISPLAY_RENDERER_VULKAN;
+    setenv("XEMU_ANDROID_FORCE_CPU_BLIT", "0", 1);
+    g_config.general.show_welcome = false;
+    g_config.perf.cache_shaders = false;
+    LogInfoInt("Config final show_welcome=%d", g_config.general.show_welcome ? 1 : 0);
+    LogInfoInt("Config final cache_shaders=%d", g_config.perf.cache_shaders ? 1 : 0);
+    LogInfoInt("Config final renderer=%d", (int)g_config.display.renderer);
+    LogInfoFmt("Config final bootrom=%s", g_config.sys.files.bootrom_path ? g_config.sys.files.bootrom_path : "(null)");
+    LogInfoFmt("Config final flashrom=%s", g_config.sys.files.flashrom_path ? g_config.sys.files.flashrom_path : "(null)");
+    LogInfoFmt("Config final hdd=%s", g_config.sys.files.hdd_path ? g_config.sys.files.hdd_path : "(null)");
+    LogInfoFmt("Config final dvd=%s", g_config.sys.files.dvd_path ? g_config.sys.files.dvd_path : "(null)");
+    LogInfoFmt("Config final eeprom=%s", g_config.sys.files.eeprom_path ? g_config.sys.files.eeprom_path : "(null)");
+
+    std::vector<std::string> arg_storage;
+    arg_storage.emplace_back("xemu");
+
+    std::vector<char*> xemu_argv;
+    xemu_argv.reserve(arg_storage.size() + 1);
+    for (auto& arg : arg_storage) {
+      xemu_argv.push_back(const_cast<char*>(arg.c_str()));
+    }
+    xemu_argv.push_back(nullptr);
+    LogInfo("SDL_main: launching xemu core");
+    xemu_android_display_preinit();
+
+    QemuLaunchContext launch_ctx{
+      static_cast<int>(arg_storage.size()),
+      xemu_argv.data(),
+    };
+    SDL_Thread* qemu_thread = SDL_CreateThread(QemuThreadMain, "qemu_main", &launch_ctx);
+    if (!qemu_thread) {
+      LogErrorFmt("Failed to start xemu thread: %s", SDL_GetError());
+      return 1;
+    }
+    LogInfo("SDL_main: qemu thread started");
+    (void)qemu_thread;
+    xemu_android_display_wait_ready();
+    LogInfo("SDL_main: display ready, entering render loop");
+    xemu_android_display_loop();
+    return 0;
+  }
+
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
   SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
   SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
   SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);

@@ -42,6 +42,12 @@ void qemu_event_init(QemuEvent *ev, bool init)
 
 void qemu_event_destroy(QemuEvent *ev)
 {
+#ifdef __ANDROID__
+    /* Avoid destroying pthread primitives on Android; some threads may still
+     * use the event during teardown, which triggers bionic FORTIFY aborts. */
+    (void)ev;
+    return;
+#endif
     assert(ev->initialized);
     ev->initialized = false;
 #ifndef HAVE_FUTEX

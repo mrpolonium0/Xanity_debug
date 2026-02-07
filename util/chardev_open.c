@@ -39,6 +39,9 @@
 
 #include "qemu/osdep.h"
 #include "qemu/chardev_open.h"
+#ifdef __ANDROID__
+#include <sys/sysmacros.h>
+#endif
 
 static int open_cdev_internal(const char *path, dev_t cdev)
 {

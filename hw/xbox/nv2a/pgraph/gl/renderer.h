@@ -220,6 +220,8 @@ typedef struct PGRAPHGLState {
         GLuint fbo, vao, vbo, prog;
         GLuint display_size_loc;
         GLuint line_offset_loc;
+        GLuint clip_rect_loc;
+        GLint clip_enable_loc;
         GLuint tex_loc;
         GLuint pvideo_tex;
         GLint pvideo_enable_loc;
@@ -238,6 +240,10 @@ typedef struct PGRAPHGLState {
     struct supported_extensions {
         GLboolean texture_filter_anisotropic;
     } supported_extensions;
+
+#ifdef __ANDROID__
+    bool bgra_supported;
+#endif
 } PGRAPHGLState;
 
 extern GloContext *g_nv2a_context_render;

@@ -18,6 +18,9 @@
  */
 
 #include "qemu/osdep.h"
+#ifdef __ANDROID__
+#include <sys/sysmacros.h>
+#endif
 #include "exec/page-vary.h"
 #include "hw/core/cpu.h"
 #include "qapi/error.h"

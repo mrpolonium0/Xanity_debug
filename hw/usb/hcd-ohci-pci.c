@@ -171,3 +171,9 @@ static void ohci_pci_register_types(void)
 }
 
 type_init(ohci_pci_register_types)
+
+#ifdef __ANDROID__
+void xemu_android_force_ohci_pci_link(void)
+{
+}
+#endif
