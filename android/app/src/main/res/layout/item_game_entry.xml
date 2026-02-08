@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:app="http://schemas.android.com/apk/res-auto"
+  android:layout_width="match_parent"
+  android:layout_height="wrap_content"
+  android:layout_marginTop="12dp"
+  android:clickable="true"
+  android:focusable="true"
+  app:cardBackgroundColor="@color/xemu_surface_variant"
+  app:cardCornerRadius="22dp"
+  app:cardElevation="0dp"
+  app:rippleColor="@color/xemu_green"
+  app:strokeColor="@color/xemu_outline"
+  app:strokeWidth="1dp">
+
+  <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:padding="16dp">
+
+    <ImageView
+      android:layout_width="40dp"
+      android:layout_height="40dp"
+      android:contentDescription="@string/library_open_game"
+      android:src="@android:drawable/ic_menu_slideshow"
+      android:tint="@color/xemu_green" />
+
+    <LinearLayout
+      android:layout_width="0dp"
+      android:layout_height="wrap_content"
+      android:layout_marginStart="12dp"
+      android:layout_weight="1"
+      android:orientation="vertical">
+
+      <TextView
+        android:id="@+id/game_name_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textAppearance="@style/TextAppearance.Material3.TitleMedium" />
+
+      <TextView
+        android:id="@+id/game_size_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+        android:textColor="@color/xemu_text_muted" />
+
+      <TextView
+        android:id="@+id/game_path_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:ellipsize="middle"
+        android:maxLines="1"
+        android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+        android:textColor="@color/xemu_text_muted" />
+    </LinearLayout>
+
+    <ImageView
+      android:layout_width="24dp"
+      android:layout_height="24dp"
+      android:contentDescription="@string/library_open_game"
+      android:src="@android:drawable/ic_media_play"
+      android:tint="@color/xemu_green" />
+  </LinearLayout>
+</com.google.android.material.card.MaterialCardView>

@@ -9,6 +9,8 @@
 #include <jni.h>
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -55,6 +57,42 @@ static bool FileExists(const std::string& path) {
   if (path.empty()) return false;
   struct stat st {};
   return stat(path.c_str(), &st) == 0;
+}
+
+static bool IsTcgTuningEnabled() {
+  const char* value = SDL_getenv("XEMU_ANDROID_TCG_TUNING");
+  return !(value && value[0] == '0');
+}
+
+static const char* GetTcgThreadFromEnv() {
+  const char* value = SDL_getenv("XEMU_ANDROID_TCG_THREAD");
+  if (value && strcmp(value, "single") == 0) {
+    return "single";
+  }
+  return "multi";
+}
+
+static int GetTcgTbSizeFromEnv() {
+  constexpr int kDefaultTbSize = 128;
+  constexpr int kMinTbSize = 32;
+  constexpr int kMaxTbSize = 512;
+
+  const char* value = SDL_getenv("XEMU_ANDROID_TCG_TB_SIZE");
+  if (!value || value[0] == '\0') {
+    return kDefaultTbSize;
+  }
+
+  char* end = nullptr;
+  long parsed = strtol(value, &end, 10);
+  if (end == value || (end && *end != '\0')) {
+    return kDefaultTbSize;
+  }
+  if (parsed < kMinTbSize) {
+    parsed = kMinTbSize;
+  } else if (parsed > kMaxTbSize) {
+    parsed = kMaxTbSize;
+  }
+  return static_cast<int>(parsed);
 }
 
 static JNIEnv* GetEnv() {
@@ -220,6 +258,15 @@ static bool WriteConfigToml(const std::string& config_path,
   }
   if (!android->contains("force_cpu_blit")) {
     android->insert_or_assign("force_cpu_blit", false);
+  }
+  if (!android->contains("tcg_tuning")) {
+    android->insert_or_assign("tcg_tuning", true);
+  }
+  if (!android->contains("tcg_thread")) {
+    android->insert_or_assign("tcg_thread", "multi");
+  }
+  if (!android->contains("tcg_tb_size")) {
+    android->insert_or_assign("tcg_tb_size", 128);
   }
 
   files->insert_or_assign("bootrom_path", mcpx);
@@ -454,9 +501,18 @@ extern "C" int SDL_main(int argc, char* argv[]) {
 
     std::vector<std::string> arg_storage;
     arg_storage.emplace_back("xemu");
-    arg_storage.emplace_back("-accel");
-    arg_storage.emplace_back("tcg,thread=multi,tb-size=256");
-    LogInfo("SDL_main: forcing TCG accel thread=multi tb-size=256");
+    if (IsTcgTuningEnabled()) {
+      const char* tcg_thread = GetTcgThreadFromEnv();
+      int tcg_tb_size = GetTcgTbSizeFromEnv();
+      char accel_opts[64];
+      snprintf(accel_opts, sizeof(accel_opts), "tcg,thread=%s,tb-size=%d",
+               tcg_thread, tcg_tb_size);
+      arg_storage.emplace_back("-accel");
+      arg_storage.emplace_back(accel_opts);
+      LogInfoFmt("SDL_main: using accel %s", accel_opts);
+    } else {
+      LogInfo("SDL_main: TCG tuning disabled");
+    }
 
     std::vector<char*> xemu_argv;
     xemu_argv.reserve(arg_storage.size() + 1);

@@ -16,21 +16,23 @@ class LauncherActivity : Activity() {
     val flashUriStr = prefs.getString("flashUri", null)
     val hddUriStr = prefs.getString("hddUri", null)
     val dvdUriStr = prefs.getString("dvdUri", null)
+    val gamesFolderUriStr = prefs.getString("gamesFolderUri", null)
     val mcpxPath = prefs.getString("mcpxPath", null)
     val flashPath = prefs.getString("flashPath", null)
     val hddPath = prefs.getString("hddPath", null)
     val dvdPath = prefs.getString("dvdPath", null)
-    val skipGamePicker = prefs.getBoolean("skip_game_picker", false)
 
     val mcpxUri = mcpxUriStr?.let(Uri::parse)
     val flashUri = flashUriStr?.let(Uri::parse)
     val hddUri = hddUriStr?.let(Uri::parse)
     val dvdUri = dvdUriStr?.let(Uri::parse)
+    val gamesFolderUri = gamesFolderUriStr?.let(Uri::parse)
 
     val hasMcpx = hasLocalFile(mcpxPath) || (mcpxUri != null && hasPersistedReadPermission(mcpxUri))
     val hasFlash = hasLocalFile(flashPath) || (flashUri != null && hasPersistedReadPermission(flashUri))
     val hasHdd = hasLocalFile(hddPath) || (hddUri != null && hasPersistedReadPermission(hddUri))
     val hasDvd = hasLocalFile(dvdPath) || (dvdUri != null && hasPersistedReadPermission(dvdUri))
+    val hasGamesFolder = gamesFolderUri != null && hasPersistedReadPermission(gamesFolderUri)
 
     val editor = prefs.edit()
     var clearedCore = false
@@ -67,6 +69,10 @@ class LauncherActivity : Activity() {
       editor.remove("dvdPath")
       clearedOptional = true
     }
+    if (!hasGamesFolder && gamesFolderUriStr != null) {
+      editor.remove("gamesFolderUri")
+      clearedCore = true
+    }
     if (clearedCore) {
       setupComplete = false
       editor.putBoolean("setup_complete", false)
@@ -76,14 +82,8 @@ class LauncherActivity : Activity() {
       editor.apply()
     }
 
-    val needsSetup = !setupComplete || !hasMcpx || !hasFlash || !hasHdd
-    val needsGamePicker = !skipGamePicker && !hasDvd
-    val next =
-      if (needsSetup || needsGamePicker) {
-        SetupWizardActivity::class.java
-      } else {
-        MainActivity::class.java
-      }
+    val needsSetup = !setupComplete || !hasMcpx || !hasFlash || !hasHdd || !hasGamesFolder
+    val next = if (needsSetup) SetupWizardActivity::class.java else GameLibraryActivity::class.java
 
     startActivity(Intent(this, next))
     finish()

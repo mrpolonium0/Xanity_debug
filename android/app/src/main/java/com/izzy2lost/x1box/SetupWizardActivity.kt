@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.documentfile.provider.DocumentFile
 import com.google.android.material.button.MaterialButton
 import java.io.File
 import java.io.FileOutputStream
@@ -38,24 +39,16 @@ class SetupWizardActivity : AppCompatActivity() {
   private var mcpxUri: Uri? = null
   private var flashUri: Uri? = null
   private var hddUri: Uri? = null
-  private var dvdUri: Uri? = null
+  private var gamesFolderUri: Uri? = null
   private var mcpxPath: String? = null
   private var flashPath: String? = null
   private var hddPath: String? = null
-  private var dvdPath: String? = null
   private var currentStep = 0
   private var isCopying = false
 
   private val mcpxExts = setOf("bin", "rom", "img")
   private val flashExts = setOf("bin", "rom", "img")
   private val hddExts = setOf("qcow2", "img")
-  private val discExts = setOf("iso", "xiso", "cso", "cci")
-  private val discMimes = setOf(
-    "application/x-iso9660-image",
-    "application/x-cd-image",
-    "application/x-iso9660",
-    "application/vnd.iso-image"
-  )
 
   private val pickMcpx =
     registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -126,26 +119,14 @@ class SetupWizardActivity : AppCompatActivity() {
       }
     }
 
-  private val pickDisc =
-    registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+  private val pickGamesFolder =
+    registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
       if (uri != null) {
-        if (!isAllowedFile(uri, discExts, discMimes)) {
-          showExtensionError(discExts)
-          return@registerForActivityResult
-        }
         persistUriPermission(uri)
-        dvdUri = uri
-        prefs.edit().putString("dvdUri", uri.toString()).apply()
-        copyUriAsync(uri, "dvd.iso") { path ->
-          if (path != null) {
-            dvdPath = path
-            prefs.edit().putString("dvdPath", path).apply()
-          } else {
-            Toast.makeText(this, "Failed to copy game disc image", Toast.LENGTH_LONG).show()
-          }
-          updateDiscSelection()
-          updateButtons()
-        }
+        gamesFolderUri = uri
+        prefs.edit().putString("gamesFolderUri", uri.toString()).apply()
+        updateDiscSelection()
+        updateButtons()
       }
     }
 
@@ -155,16 +136,15 @@ class SetupWizardActivity : AppCompatActivity() {
     mcpxPath = loadLocalPath("mcpxPath")
     flashPath = loadLocalPath("flashPath")
     hddPath = loadLocalPath("hddPath")
-    dvdPath = loadLocalPath("dvdPath")
     mcpxUri = prefs.getString("mcpxUri", null)?.let(Uri::parse)
     flashUri = prefs.getString("flashUri", null)?.let(Uri::parse)
     hddUri = prefs.getString("hddUri", null)?.let(Uri::parse)
-    dvdUri = prefs.getString("dvdUri", null)?.let(Uri::parse)
+    gamesFolderUri = prefs.getString("gamesFolderUri", null)?.let(Uri::parse)
 
     val coreReady = isFileReady(mcpxPath) && isFileReady(flashPath) && isFileReady(hddPath)
-    val discReady = isFileReady(dvdPath)
-    if (prefs.getBoolean("setup_complete", false) && coreReady && discReady) {
-      goToMain()
+    val gamesFolderReady = hasGamesFolderReady()
+    if (prefs.getBoolean("setup_complete", false) && coreReady && gamesFolderReady) {
+      goToLibrary()
       return
     }
 
@@ -204,7 +184,7 @@ class SetupWizardActivity : AppCompatActivity() {
     btnPickMcpx.setOnClickListener { pickMcpx.launch(arrayOf("application/octet-stream")) }
     btnPickFlash.setOnClickListener { pickFlash.launch(arrayOf("application/octet-stream")) }
     btnPickHdd.setOnClickListener { pickHdd.launch(arrayOf("application/x-qcow2", "application/octet-stream")) }
-    btnPickDisc.setOnClickListener { pickDisc.launch(arrayOf("*/*")) }
+    btnPickDisc.setOnClickListener { pickGamesFolder.launch(gamesFolderUri) }
 
     btnBack.setOnClickListener { showStep(currentStep - 1) }
     btnNext.setOnClickListener {
@@ -233,7 +213,7 @@ class SetupWizardActivity : AppCompatActivity() {
     updateHddSelection()
     updateDiscSelection()
 
-    val startStep = if (coreReady && !discReady) pages.size - 1 else 0
+    val startStep = if (coreReady && !gamesFolderReady) pages.size - 1 else 0
     showStep(startStep)
   }
 
@@ -271,7 +251,7 @@ class SetupWizardActivity : AppCompatActivity() {
         0 -> isFileReady(mcpxPath)
         1 -> isFileReady(flashPath)
         2 -> isFileReady(hddPath)
-        else -> true
+        else -> hasGamesFolderReady()
       }
   }
 
@@ -291,22 +271,21 @@ class SetupWizardActivity : AppCompatActivity() {
   }
 
   private fun updateDiscSelection() {
-    val value = dvdPath ?: dvdUri?.toString() ?: getString(R.string.setup_not_set)
+    val value = gamesFolderUri?.let { formatTreeLabel(it) } ?: getString(R.string.setup_not_set)
     discPathText.text = getString(R.string.setup_disc_value, value)
   }
 
 
   private fun finishSetup() {
-    val skipGamePicker = !isFileReady(dvdPath)
     prefs.edit()
       .putBoolean("setup_complete", true)
-      .putBoolean("skip_game_picker", skipGamePicker)
+      .putBoolean("skip_game_picker", false)
       .apply()
-    goToMain()
+    goToLibrary()
   }
 
-  private fun goToMain() {
-    startActivity(Intent(this, MainActivity::class.java))
+  private fun goToLibrary() {
+    startActivity(Intent(this, GameLibraryActivity::class.java))
     finish()
   }
 
@@ -329,6 +308,29 @@ class SetupWizardActivity : AppCompatActivity() {
 
   private fun isFileReady(path: String?): Boolean {
     return path != null && File(path).isFile
+  }
+
+  private fun hasGamesFolderReady(): Boolean {
+    val uri = gamesFolderUri ?: return false
+    if (!hasPersistedReadPermission(uri)) {
+      return false
+    }
+    val root = DocumentFile.fromTreeUri(this, uri) ?: return false
+    return root.exists() && root.isDirectory
+  }
+
+  private fun hasPersistedReadPermission(uri: Uri): Boolean {
+    return contentResolver.persistedUriPermissions.any { perm ->
+      perm.uri == uri && perm.isReadPermission
+    }
+  }
+
+  private fun formatTreeLabel(uri: Uri): String {
+    val name = DocumentFile.fromTreeUri(this, uri)?.name
+    if (!name.isNullOrBlank()) {
+      return name
+    }
+    return uri.toString()
   }
 
   private fun copyUriAsync(uri: Uri, destName: String, onDone: (String?) -> Unit) {

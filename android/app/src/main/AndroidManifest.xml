@@ -35,5 +35,10 @@
       android:screenOrientation="fullSensor"
       android:exported="false" />
 
+    <activity
+      android:name=".GameLibraryActivity"
+      android:screenOrientation="fullSensor"
+      android:exported="false" />
+
   </application>
 </manifest>

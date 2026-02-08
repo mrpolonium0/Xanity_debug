@@ -242,7 +242,7 @@
                 android:layout_height="40dp"
                 android:layout_gravity="center_horizontal"
                 android:contentDescription="@string/setup_disc_title"
-                android:src="@android:drawable/ic_menu_slideshow"
+                android:src="@android:drawable/ic_menu_agenda"
                 android:tint="@color/xemu_green" />
 
               <TextView
@@ -268,7 +268,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="16dp"
                 android:text="@string/setup_pick_disc"
-                app:icon="@android:drawable/ic_menu_slideshow"
+                app:icon="@android:drawable/ic_menu_agenda"
                 app:iconGravity="textStart"
                 app:iconPadding="8dp" />
 

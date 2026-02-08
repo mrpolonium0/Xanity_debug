@@ -22,8 +22,19 @@
   <string name="setup_pick_hdd">Choose Hard Disk</string>
   <string name="setup_hdd_value">Hard Disk: %1$s</string>
 
-  <string name="setup_disc_title">Game Disc (Optional)</string>
-  <string name="setup_disc_body">Choose an Xbox game disc image to boot.</string>
-  <string name="setup_pick_disc">Choose Game Disc</string>
-  <string name="setup_disc_value">Game Disc: %1$s</string>
+  <string name="setup_disc_title">Games Folder</string>
+  <string name="setup_disc_body">Pick your games folder using SAF. X1 BOX will scan it for playable images.</string>
+  <string name="setup_pick_disc">Choose Games Folder</string>
+  <string name="setup_disc_value">Games Folder: %1$s</string>
+
+  <string name="library_title">Game Library</string>
+  <string name="library_subtitle">Pick a game to launch in xemu.</string>
+  <string name="library_change_folder">Change Folder</string>
+  <string name="library_folder_value">Folder: %1$s</string>
+  <string name="library_no_folder">No folder selected</string>
+  <string name="library_loading_games">Scanning games...</string>
+  <string name="library_empty_games">No supported games found in this folder.</string>
+  <string name="library_game_size">Size: %1$s</string>
+  <string name="library_game_path">Path: %1$s</string>
+  <string name="library_open_game">Open</string>
 </resources>

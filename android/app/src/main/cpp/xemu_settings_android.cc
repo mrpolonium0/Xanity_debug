@@ -198,6 +198,9 @@ bool xemu_settings_load(void)
     xemu_settings_apply_defaults();
     error_msg.clear();
     setenv("XEMU_ANDROID_FORCE_CPU_BLIT", "0", 1);
+    setenv("XEMU_ANDROID_TCG_TUNING", "1", 1);
+    setenv("XEMU_ANDROID_TCG_THREAD", "multi", 1);
+    setenv("XEMU_ANDROID_TCG_TB_SIZE", "128", 1);
 
     const char *path = xemu_settings_get_path();
     if (!path || *path == '\0') {
@@ -256,10 +259,36 @@ bool xemu_settings_load(void)
         }
 
         // Android-specific settings
+        if (auto force_cpu_blit = android_cfg["force_cpu_blit"].value<bool>()) {
+            setenv("XEMU_ANDROID_FORCE_CPU_BLIT", *force_cpu_blit ? "1" : "0", 1);
+        }
         if (auto egl_offscreen = android_cfg["egl_offscreen"].value<bool>()) {
             if (!*egl_offscreen) {
                 setenv("XEMU_ANDROID_EGL_OFFSCREEN", "0", 1);
             }
+        }
+        if (auto tcg_tuning = android_cfg["tcg_tuning"].value<bool>()) {
+            setenv("XEMU_ANDROID_TCG_TUNING", *tcg_tuning ? "1" : "0", 1);
+        }
+        if (auto tcg_thread = android_cfg["tcg_thread"].value<std::string>()) {
+            if (*tcg_thread == "single" || *tcg_thread == "multi") {
+                setenv("XEMU_ANDROID_TCG_THREAD", tcg_thread->c_str(), 1);
+            } else {
+                __android_log_print(ANDROID_LOG_WARN, "xemu-android",
+                                    "Ignoring android.tcg_thread=%s (expected single|multi)",
+                                    tcg_thread->c_str());
+            }
+        }
+        if (auto tcg_tb_size = android_cfg["tcg_tb_size"].value<int64_t>()) {
+            int tb_size = (int)*tcg_tb_size;
+            if (tb_size < 32) {
+                tb_size = 32;
+            } else if (tb_size > 512) {
+                tb_size = 512;
+            }
+            char tb_size_str[16];
+            snprintf(tb_size_str, sizeof(tb_size_str), "%d", tb_size);
+            setenv("XEMU_ANDROID_TCG_TB_SIZE", tb_size_str, 1);
         }
 
         // System file paths
