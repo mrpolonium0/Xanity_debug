@@ -22,14 +22,9 @@
 #include "renderer.h"
 #include "xemu-version.h"
 
-#include <SDL.h>
-#include <SDL_syswm.h>
-#include <SDL_vulkan.h>
-
 #ifdef __ANDROID__
 #include <android/log.h>
 #endif
-
 #include <volk.h>
 
 #define VkExtensionPropertiesArray GArray
@@ -101,34 +96,6 @@ static bool check_validation_layer_support(void)
     return true;
 }
 
-static void create_window(PGRAPHVkState *r, Error **errp)
-{
-#ifdef __ANDROID__
-    /*
-     * Android supports a single SDL window per process for this app flow.
-     * The Vulkan renderer is headless and only needs instance/device setup,
-     * so skip creating a hidden Vulkan window here.
-     */
-    r->window = NULL;
-    return;
-#endif
-    r->window = SDL_CreateWindow(
-        "SDL Offscreen Window", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        640, 480, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
-
-    if (r->window == NULL) {
-        error_setg(errp, "SDL_CreateWindow failed: %s", SDL_GetError());
-    }
-}
-
-static void destroy_window(PGRAPHVkState *r)
-{
-    if (r->window) {
-        SDL_DestroyWindow(r->window);
-        r->window = NULL;
-    }
-}
-
 static VkExtensionPropertiesArray *
 get_available_instance_extensions(PGRAPHState *pg)
 {
@@ -164,25 +131,9 @@ is_extension_available(VkExtensionPropertiesArray *available_extensions,
 
 static StringArray *get_required_instance_extension_names(PGRAPHState *pg)
 {
-    PGRAPHVkState *r = pg->vk_renderer_state;
-
-    // Add instance extensions SDL lists as required
-    unsigned int sdl_count = 0;
-    if (r->window) {
-        SDL_Vulkan_GetInstanceExtensions((SDL_Window *)r->window, &sdl_count, NULL);
-    }
-
-    StringArray *extensions =
-        g_array_sized_new(FALSE, FALSE, sizeof(char *),
-                          sdl_count + ARRAY_SIZE(required_instance_extensions));
-
-    if (sdl_count && r->window) {
-        g_array_set_size(extensions, sdl_count);
-        SDL_Vulkan_GetInstanceExtensions((SDL_Window *)r->window, &sdl_count,
-                                         (const char **)extensions->data);
-    }
-
-    // Add additional required extensions
+    StringArray *extensions = g_array_sized_new(
+        FALSE, FALSE, sizeof(char *),
+        ARRAY_SIZE(required_instance_extensions));
     g_array_append_vals(extensions, required_instance_extensions,
                         ARRAY_SIZE(required_instance_extensions));
 
@@ -222,15 +173,9 @@ static bool create_instance(PGRAPHState *pg, Error **errp)
     PGRAPHVkState *r = pg->vk_renderer_state;
     VkResult result;
 
-    create_window(r, errp);
-    if (*errp) {
-        return false;
-    }
-
     result = volkInitialize();
     if (result != VK_SUCCESS) {
         error_setg(errp, "volkInitialize failed");
-        destroy_window(r);
         return false;
     }
 
@@ -337,7 +282,6 @@ static bool create_instance(PGRAPHState *pg, Error **errp)
 
 error:
     volkFinalize();
-    destroy_window(r);
     return false;
 }
 
@@ -799,5 +743,4 @@ void pgraph_vk_finalize_instance(PGRAPHState *pg)
     }
 
     volkFinalize();
-    destroy_window(r);
 }

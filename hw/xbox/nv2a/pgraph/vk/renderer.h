@@ -320,7 +320,6 @@ typedef struct PGRAPHVkComputeState {
 } PGRAPHVkComputeState;
 
 typedef struct PGRAPHVkState {
-    void *window;
     VkInstance instance;
     VkDebugUtilsMessengerEXT debug_messenger;
     int debug_depth;
