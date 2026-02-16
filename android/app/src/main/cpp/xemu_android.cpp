@@ -11,12 +11,10 @@
 #include <jni.h>
 
 #include <climits>
-#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <algorithm>
 #include <string>
 #include <vector>
 #include <sys/stat.h>
@@ -207,64 +205,24 @@ static std::string JStringToString(JNIEnv* env, jstring value) {
   return out;
 }
 
-static std::string ToLowerAscii(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return value;
+static bool HasInlineAioCrashFlag(const std::string& flag_path) {
+  if (flag_path.empty()) {
+    return false;
+  }
+  struct stat st {};
+  return stat(flag_path.c_str(), &st) == 0;
 }
 
-static std::string GetBuildField(JNIEnv* env, const char* field_name) {
-  jclass buildClass = env->FindClass("android/os/Build");
-  if (!buildClass) {
-    HasException(env, "Build class lookup");
-    return {};
-  }
-  jfieldID field = env->GetStaticFieldID(buildClass, field_name, "Ljava/lang/String;");
-  if (!field) {
-    HasException(env, field_name);
-    env->DeleteLocalRef(buildClass);
-    return {};
-  }
-  jstring value =
-      static_cast<jstring>(env->GetStaticObjectField(buildClass, field));
-  if (HasException(env, field_name)) {
-    env->DeleteLocalRef(buildClass);
-    return {};
-  }
-  std::string out = JStringToString(env, value);
-  if (value) {
-    env->DeleteLocalRef(value);
-  }
-  env->DeleteLocalRef(buildClass);
-  return out;
-}
-
-static bool ShouldEnableInlineAioWorkaround() {
+static bool ShouldEnableInlineAioWorkaround(const std::string& crash_flag_path) {
   const char* forced = SDL_getenv("XEMU_ANDROID_INLINE_AIO");
   if (forced) {
     return forced[0] != '\0' && forced[0] != '0';
   }
 
-  JNIEnv* env = GetEnv();
-  if (!env) {
-    return false;
-  }
-
-  const std::string device = ToLowerAscii(GetBuildField(env, "DEVICE"));
-  const std::string product = ToLowerAscii(GetBuildField(env, "PRODUCT"));
-  const std::string model = ToLowerAscii(GetBuildField(env, "MODEL"));
-
-  static const char* kAffectedDevices[] = {
-    "duchamp",
-  };
-
-  for (const char* marker : kAffectedDevices) {
-    if (device == marker ||
-        product.find(marker) != std::string::npos ||
-        model.find(marker) != std::string::npos) {
-      return true;
-    }
+  if (HasInlineAioCrashFlag(crash_flag_path)) {
+    LogInfoFmt("Inline AIO enabled from crash marker: %s",
+               crash_flag_path.c_str());
+    return true;
   }
 
   return false;
@@ -357,6 +315,7 @@ struct SetupFiles {
   std::string dvd;
   std::string eeprom;
   std::string config_path;
+  std::string inline_aio_flag_path;
 };
 
 static bool WriteConfigToml(const std::string& config_path,
@@ -473,6 +432,7 @@ static SetupFiles SyncSetupFiles() {
   std::string base = std::string(basePath) + "/x1box";
   EnsureDirExists(base);
   out.eeprom = base + "/eeprom.bin";
+  out.inline_aio_flag_path = base + "/inline_aio_required.flag";
 
   const std::string mcpxPath = GetPrefString(env, activity, "mcpxPath");
   const std::string flashPath = GetPrefString(env, activity, "flashPath");
@@ -556,6 +516,7 @@ extern "C" int (*qemu_main)(void);
 extern "C" void xemu_android_display_preinit(void);
 extern "C" void xemu_android_display_wait_ready(void);
 extern "C" void xemu_android_display_loop(void);
+extern "C" void xemu_android_set_inline_aio_crash_flag_path(const char* path);
 
 struct QemuLaunchContext {
   int argc;
@@ -601,13 +562,18 @@ extern "C" int SDL_main(int argc, char* argv[]) {
   SDL_GameControllerEventState(SDL_ENABLE);
   LoadGameControllerMappingsFromAssets();
 
+  SetupFiles setup = SyncSetupFiles();
+
+  xemu_android_set_inline_aio_crash_flag_path(setup.inline_aio_flag_path.empty()
+                                                   ? nullptr
+                                                   : setup.inline_aio_flag_path.c_str());
+
   if (!SDL_getenv("XEMU_ANDROID_INLINE_AIO")) {
-    const bool use_inline_aio = ShouldEnableInlineAioWorkaround();
+    const bool use_inline_aio =
+        ShouldEnableInlineAioWorkaround(setup.inline_aio_flag_path);
     setenv("XEMU_ANDROID_INLINE_AIO", use_inline_aio ? "1" : "0", 1);
     LogInfoFmt("XEMU_ANDROID_INLINE_AIO=%s", use_inline_aio ? "1" : "0");
   }
-
-  SetupFiles setup = SyncSetupFiles();
 
   if (!setup.config_path.empty()) {
     LogInfo("SDL_main: loading config");

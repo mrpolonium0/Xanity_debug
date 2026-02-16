@@ -1,5 +1,6 @@
 #include <android/log.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdint.h>
 #include <string.h>
@@ -9,6 +10,9 @@
 
 namespace {
 constexpr const char* kCrashTag = "xemu-android";
+constexpr size_t kPathMax = 512;
+
+static char g_inline_aio_flag_path[kPathMax];
 
 static int GetTid() {
   return static_cast<int>(syscall(SYS_gettid));
@@ -53,9 +57,28 @@ static void LogBacktrace() {
   }
 }
 
+static void MarkInlineAioRequired() {
+  if (g_inline_aio_flag_path[0] == '\0') {
+    return;
+  }
+
+  int fd = open(g_inline_aio_flag_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
+    return;
+  }
+
+  static const char kValue[] = "1\n";
+  ssize_t ignored = write(fd, kValue, sizeof(kValue) - 1);
+  (void)ignored;
+  close(fd);
+}
+
 static void CrashHandler(int sig, siginfo_t* info, void* ucontext) {
   (void)info;
   (void)ucontext;
+  if (sig == SIGILL) {
+    MarkInlineAioRequired();
+  }
   __android_log_print(ANDROID_LOG_ERROR, kCrashTag,
                       "Caught signal %d in tid %d", sig, GetTid());
   LogBacktrace();
@@ -69,9 +92,21 @@ static void InstallCrashHandlers() {
   sa.sa_sigaction = CrashHandler;
   sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
   sigaction(SIGABRT, &sa, nullptr);
+  sigaction(SIGILL, &sa, nullptr);
   sigaction(SIGSEGV, &sa, nullptr);
 }
 }  // namespace
+
+extern "C" void xemu_android_set_inline_aio_crash_flag_path(const char* path) {
+  if (!path) {
+    g_inline_aio_flag_path[0] = '\0';
+    return;
+  }
+
+  size_t len = strnlen(path, sizeof(g_inline_aio_flag_path) - 1);
+  memcpy(g_inline_aio_flag_path, path, len);
+  g_inline_aio_flag_path[len] = '\0';
+}
 
 __attribute__((constructor)) static void InstallCrashHandlersOnLoad() {
   InstallCrashHandlers();
