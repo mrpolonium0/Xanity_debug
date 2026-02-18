@@ -35,6 +35,10 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 class GameLibraryActivity : AppCompatActivity() {
+  companion object {
+    const val EXTRA_RESTART_LAST_GAME = "com.izzy2lost.x1box.extra.RESTART_LAST_GAME"
+  }
+
   private data class GameEntry(
     val title: String,
     val uri: Uri,
@@ -94,6 +98,10 @@ class GameLibraryActivity : AppCompatActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     setContentView(R.layout.activity_game_library)
+
+    if (tryRestartLastGameFromIntent()) {
+      return
+    }
 
     folderText = findViewById(R.id.library_folder_text)
     loadingSpinner = findViewById(R.id.library_loading)
@@ -158,6 +166,49 @@ class GameLibraryActivity : AppCompatActivity() {
     }
 
     loadGames()
+  }
+
+  private fun tryRestartLastGameFromIntent(): Boolean {
+    if (!intent.getBooleanExtra(EXTRA_RESTART_LAST_GAME, false)) {
+      return false
+    }
+
+    val internalDvdIso = resolveInternalDvdIsoFile()
+    if (internalDvdIso == null || !internalDvdIso.isFile) {
+      Toast.makeText(this, getString(R.string.library_restart_failed), Toast.LENGTH_SHORT).show()
+      return false
+    }
+
+    prefs.edit()
+      .putString("dvdPath", internalDvdIso.absolutePath)
+      .remove("dvdUri")
+      .putBoolean("skip_game_picker", false)
+      .apply()
+
+    launchMainActivityForRestart()
+    return true
+  }
+
+  private fun resolveInternalDvdIsoFile(): File? {
+    val external = getExternalFilesDir(null)
+    if (external != null) {
+      val externalIso = File(external, "x1box/dvd.iso")
+      if (externalIso.isFile) {
+        return externalIso
+      }
+    }
+
+    val internalIso = File(filesDir, "x1box/dvd.iso")
+    if (internalIso.isFile) {
+      return internalIso
+    }
+
+    return null
+  }
+
+  private fun launchMainActivityForRestart() {
+    startActivity(Intent(this, MainActivity::class.java))
+    finish()
   }
 
   private fun loadGames() {

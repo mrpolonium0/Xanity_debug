@@ -54,6 +54,7 @@
   <string name="library_convert_copy_input_failed">Failed to copy ISO into converter workspace.</string>
   <string name="library_convert_copy_output_failed">Failed to copy converted XISO back to games folder.</string>
   <string name="library_convert_resolve_failed">Could not resolve destination folder for selected game.</string>
+  <string name="library_restart_failed">Unable to restart. The selected game is no longer accessible.</string>
   <string name="library_game_size">Size: %1$s</string>
   <string name="library_game_path">Path: %1$s</string>
   <string name="library_open_game">Open</string>
@@ -71,4 +72,12 @@
   <string name="library_about_url_fork" translatable="false">https://github.com/xemu-project/xemu</string>
   <string name="library_about_url_license" translatable="false">https://github.com/izzy2lost/xemu/blob/master/LICENSE</string>
   <string name="library_about_url_disclaimer" translatable="false">https://github.com/izzy2lost/xemu/blob/master/COPYING</string>
+
+  <string name="in_game_menu_title">Game Menu</string>
+  <string name="in_game_menu_resume">Resume</string>
+  <string name="in_game_menu_restart_game">Restart Game</string>
+  <string name="in_game_menu_show_touch_controls">Show Touch Controls</string>
+  <string name="in_game_menu_hide_touch_controls">Hide Touch Controls</string>
+  <string name="in_game_menu_exit_to_library">Exit to Game Library</string>
+  <string name="in_game_menu_quit_app">Quit App</string>
 </resources>

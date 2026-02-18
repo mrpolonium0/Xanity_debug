@@ -17,4 +17,13 @@
     <item name="colorOutline">@color/xemu_outline</item>
     <item name="colorOutlineVariant">@color/xemu_outline_variant</item>
   </style>
+
+  <style name="ThemeOverlay.Xemu.RoundedDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+    <item name="shapeAppearanceOverlay">@style/ShapeAppearanceOverlay.Xemu.RoundedDialog</item>
+  </style>
+
+  <style name="ShapeAppearanceOverlay.Xemu.RoundedDialog" parent="">
+    <item name="cornerFamily">rounded</item>
+    <item name="cornerSize">24dp</item>
+  </style>
 </resources>

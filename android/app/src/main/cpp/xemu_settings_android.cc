@@ -9,6 +9,7 @@
 #include <toml++/toml.h>
 #include <android/log.h>
 
+#include <cctype>
 #include <sstream>
 #include <string>
 
@@ -140,6 +141,14 @@ static bool parse_filtering(const std::string &value, CONFIG_DISPLAY_FILTERING *
         return true;
     }
     return false;
+}
+
+static std::string to_lower_ascii(std::string value)
+{
+    for (char &c : value) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return value;
 }
 
 const char *xemu_settings_get_error_message(void)
@@ -357,6 +366,17 @@ bool xemu_settings_load(void)
             char fifo_str[16];
             snprintf(fifo_str, sizeof(fifo_str), "%d", fifo_frames);
             setenv("XEMU_ANDROID_AUDIO_FIFO_FRAMES", fifo_str, 1);
+        }
+        if (auto audio_driver = android_cfg["audio_driver"].value<std::string>()) {
+            std::string driver = *audio_driver;
+            std::string normalized = to_lower_ascii(driver);
+            if (normalized == "audiotrack") {
+                setenv("XEMU_ANDROID_AUDIO_DRIVER", "android", 1);
+            } else if (normalized == "opensl") {
+                setenv("XEMU_ANDROID_AUDIO_DRIVER", "opensles", 1);
+            } else if (!driver.empty()) {
+                setenv("XEMU_ANDROID_AUDIO_DRIVER", driver.c_str(), 1);
+            }
         }
 
         // System file paths

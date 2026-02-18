@@ -949,9 +949,19 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
 #endif
 
 #ifdef __ANDROID__
-    SDL_setenv("SDL_AUDIODRIVER", "aaudio", 0);
+    const char *audio_env = SDL_getenv("SDL_AUDIODRIVER");
+    const char *audio_hint = SDL_GetHint(SDL_HINT_AUDIODRIVER);
+    if ((!audio_env || !audio_env[0]) &&
+        (!audio_hint || !audio_hint[0])) {
+        SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER,
+                                "openslES,aaudio,android",
+                                SDL_HINT_DEFAULT);
+        audio_hint = SDL_GetHint(SDL_HINT_AUDIODRIVER);
+    }
     __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                        "SDL_AUDIODRIVER=%s", SDL_getenv("SDL_AUDIODRIVER"));
+                        "SDL audio env=%s hint=%s",
+                        (audio_env && audio_env[0]) ? audio_env : "(unset)",
+                        (audio_hint && audio_hint[0]) ? audio_hint : "(unset)");
 #endif
 
     if (SDL_Init(SDL_INIT_VIDEO)) {

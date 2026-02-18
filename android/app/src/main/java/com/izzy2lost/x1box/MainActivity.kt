@@ -1,14 +1,18 @@
 package com.izzy2lost.x1box
 
 import android.content.Context
+import android.content.Intent
 import android.hardware.input.InputManager
 import android.os.Build
 import android.os.Bundle
 import android.view.InputDevice
+import android.view.KeyEvent
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.widget.FrameLayout
+import androidx.appcompat.app.AlertDialog
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.libsdl.app.SDLActivity
 
 class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
@@ -17,6 +21,10 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   private var isControllerVisible = false
   private var inputManager: InputManager? = null
   private var hasPhysicalController = false
+  private var inGameMenuDialog: AlertDialog? = null
+  private var startButtonDown = false
+  private var selectButtonDown = false
+  private var comboTriggered = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -30,6 +38,34 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     if (hasFocus) {
       hideSystemUI()
     }
+  }
+
+  override fun onBackPressed() {
+    val currentDialog = inGameMenuDialog
+    if (currentDialog?.isShowing == true) {
+      currentDialog.dismiss()
+      return
+    }
+    showInGameMenu()
+  }
+
+  override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    if (event.keyCode == KeyEvent.KEYCODE_BACK && !isGamepadKeyEvent(event)) {
+      if (event.action == KeyEvent.ACTION_UP && event.repeatCount == 0) {
+        val currentDialog = inGameMenuDialog
+        if (currentDialog?.isShowing == true) {
+          currentDialog.dismiss()
+        } else {
+          showInGameMenu()
+        }
+      }
+      return true
+    }
+
+    if (handleGamepadMenuCombo(event)) {
+      return true
+    }
+    return super.dispatchKeyEvent(event)
   }
 
   private fun hideSystemUI() {
@@ -164,6 +200,9 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   }
 
   override fun onDestroy() {
+    inGameMenuDialog?.dismiss()
+    inGameMenuDialog = null
+
     // Unregister virtual controller
     try {
       org.libsdl.app.SDLControllerManager.nativeRemoveJoystick(-2)
@@ -193,6 +232,98 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
 
   fun forceUpdateControllerVisibility() {
     checkForPhysicalControllers()
+  }
+
+  private fun handleGamepadMenuCombo(event: KeyEvent): Boolean {
+    if (!isGamepadKeyEvent(event)) {
+      return false
+    }
+
+    val isStartKey = event.keyCode == KeyEvent.KEYCODE_BUTTON_START
+    val isSelectKey = event.keyCode == KeyEvent.KEYCODE_BUTTON_SELECT ||
+      event.keyCode == KeyEvent.KEYCODE_BACK
+    if (!isStartKey && !isSelectKey) {
+      return false
+    }
+
+    when (event.action) {
+      KeyEvent.ACTION_DOWN -> {
+        if (isStartKey) {
+          startButtonDown = true
+        }
+        if (isSelectKey) {
+          selectButtonDown = true
+        }
+
+        if (!comboTriggered && event.repeatCount == 0 &&
+          startButtonDown && selectButtonDown) {
+          comboTriggered = true
+          showInGameMenu()
+          return true
+        }
+      }
+      KeyEvent.ACTION_UP -> {
+        if (isStartKey) {
+          startButtonDown = false
+        }
+        if (isSelectKey) {
+          selectButtonDown = false
+        }
+        if (!startButtonDown || !selectButtonDown) {
+          comboTriggered = false
+        }
+      }
+    }
+
+    return comboTriggered
+  }
+
+  private fun isGamepadKeyEvent(event: KeyEvent): Boolean {
+    val source = event.source
+    return ((source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD) ||
+      ((source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK)
+  }
+
+  private fun showInGameMenu() {
+    val options = arrayOf(
+      getString(R.string.in_game_menu_resume),
+      if (isControllerVisible) {
+        getString(R.string.in_game_menu_hide_touch_controls)
+      } else {
+        getString(R.string.in_game_menu_show_touch_controls)
+      },
+      getString(R.string.in_game_menu_exit_to_library),
+      getString(R.string.in_game_menu_quit_app),
+    )
+
+    val dialog = MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(getString(R.string.in_game_menu_title))
+      .setItems(options) { _, which ->
+        when (which) {
+          0 -> {
+            // Resume
+          }
+          1 -> toggleOnScreenController()
+          2 -> exitToGameLibrary()
+          3 -> finishAffinity()
+        }
+      }
+      .setOnDismissListener {
+        inGameMenuDialog = null
+        hideSystemUI()
+      }
+      .create()
+
+    inGameMenuDialog = dialog
+    dialog.show()
+  }
+
+  private fun exitToGameLibrary() {
+    val intent = Intent(this, GameLibraryActivity::class.java).apply {
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+    }
+    startActivity(intent)
+    finish()
   }
 
   override fun getLibraries(): Array<String> = arrayOf(

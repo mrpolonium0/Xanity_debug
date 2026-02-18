@@ -135,12 +135,13 @@ static void throttle(MCPXAPUState *d)
     }
 
     if (queued_bytes > d->monitor.queued_bytes_low) {
+        int64_t now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
         if (d->next_frame_time_us == 0 ||
-            start_us - d->next_frame_time_us > EP_FRAME_US) {
-            d->next_frame_time_us = start_us;
+            now_us - d->next_frame_time_us > EP_FRAME_US) {
+            d->next_frame_time_us = now_us;
         }
         while (!qatomic_read(&d->exiting)) {
-            int64_t now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
+            now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
             int64_t remaining_ms = (d->next_frame_time_us - now_us) / 1000;
             if (remaining_ms > 0) {
                 int sleep_ms = remaining_ms > INT_MAX ? INT_MAX : (int)remaining_ms;
@@ -211,12 +212,14 @@ static void se_frame(MCPXAPUState *d)
             }
         }
 
-        qemu_spin_lock(&d->monitor.fifo_lock);
-        int num_bytes_free = (int)fifo8_num_free(&d->monitor.fifo);
-        assert(num_bytes_free >= sizeof(d->monitor.frame_buf));
-        fifo8_push_all(&d->monitor.fifo, (uint8_t *)d->monitor.frame_buf,
-                       sizeof(d->monitor.frame_buf));
-        qemu_spin_unlock(&d->monitor.fifo_lock);
+        if (d->monitor.fifo_capacity_bytes > 0) {
+            qemu_spin_lock(&d->monitor.fifo_lock);
+            int num_bytes_free = (int)fifo8_num_free(&d->monitor.fifo);
+            assert(num_bytes_free >= sizeof(d->monitor.frame_buf));
+            fifo8_push_all(&d->monitor.fifo, (uint8_t *)d->monitor.frame_buf,
+                           sizeof(d->monitor.frame_buf));
+            qemu_spin_unlock(&d->monitor.fifo_lock);
+        }
         memset(d->monitor.frame_buf, 0, sizeof(d->monitor.frame_buf));
     }
 
@@ -310,6 +313,10 @@ static void monitor_sink_cb(void *opaque, uint8_t *stream, int free_b)
 static void monitor_init(MCPXAPUState *d)
 {
     qemu_spin_init(&d->monitor.fifo_lock);
+    d->monitor.fifo_capacity_bytes = 0;
+    d->monitor.device_buffer_bytes = 0;
+    d->monitor.queued_bytes_low = 0;
+    d->monitor.queued_bytes_high = 0;
 
     int fifo_frames = 3;
     int audio_samples = 512;
@@ -323,7 +330,6 @@ static void monitor_init(MCPXAPUState *d)
 #endif
     int fifo_capacity_bytes = fifo_frames * sizeof(d->monitor.frame_buf);
     fifo8_create(&d->monitor.fifo, fifo_capacity_bytes);
-    d->monitor.fifo_capacity_bytes = fifo_capacity_bytes;
 
     struct SDL_AudioSpec sdl_audio_spec = {
         .freq = 48000,
@@ -335,8 +341,9 @@ static void monitor_init(MCPXAPUState *d)
     };
 
     if (SDL_Init(SDL_INIT_AUDIO) < 0)  {
-        fprintf(stderr, "Failed to initialize SDL audio subsystem: %s\n", SDL_GetError());
-        exit(1);
+        fprintf(stderr, "WARNING: Failed to initialize SDL audio subsystem: %s\n",
+                SDL_GetError());
+        return;
     }
 
     SDL_AudioDeviceID sdl_audio_dev;
@@ -344,9 +351,9 @@ static void monitor_init(MCPXAPUState *d)
     sdl_audio_dev = SDL_OpenAudioDevice(NULL, 0, &sdl_audio_spec,
                                         &obtained_audio_spec, 0);
     if (sdl_audio_dev == 0) {
-        fprintf(stderr, "SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
-        assert(!"SDL_OpenAudioDevice failed");
-        exit(1);
+        fprintf(stderr, "WARNING: SDL_OpenAudioDevice failed: %s\n",
+                SDL_GetError());
+        return;
     }
 
     int bytes_per_sample = SDL_AUDIO_BITSIZE(obtained_audio_spec.format) / 8;
@@ -366,7 +373,8 @@ static void monitor_init(MCPXAPUState *d)
 
     int frame_bytes = sizeof(d->monitor.frame_buf);
     int drain_bytes = MAX(device_buffer_bytes, frame_bytes);
-    int max_high = MAX(d->monitor.fifo_capacity_bytes - frame_bytes, frame_bytes);
+    int max_high = MAX(fifo_capacity_bytes - frame_bytes, frame_bytes);
+    d->monitor.fifo_capacity_bytes = fifo_capacity_bytes;
     d->monitor.device_buffer_bytes = device_buffer_bytes;
     d->monitor.queued_bytes_high = MIN(3 * drain_bytes, max_high);
     d->monitor.queued_bytes_low = MIN(drain_bytes, d->monitor.queued_bytes_high);

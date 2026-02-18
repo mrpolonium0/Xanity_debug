@@ -10,6 +10,7 @@
 #include <android/asset_manager_jni.h>
 #include <jni.h>
 
+#include <cctype>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -179,6 +180,37 @@ static int GetTcgTbSizeFromEnv() {
   return static_cast<int>(parsed);
 }
 
+static std::string ToLowerAscii(std::string value) {
+  for (char& c : value) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return value;
+}
+
+static std::string ResolveAndroidAudioDriverHint() {
+  constexpr const char* kDefaultAudioDriverHint = "openslES,aaudio,android";
+  const char* value = SDL_getenv("XEMU_ANDROID_AUDIO_DRIVER");
+  if (!value || value[0] == '\0') {
+    return kDefaultAudioDriverHint;
+  }
+
+  std::string raw(value);
+  std::string normalized = ToLowerAscii(raw);
+  if (normalized == "auto" || normalized == "default") {
+    return kDefaultAudioDriverHint;
+  }
+  if (normalized == "opensl" || normalized == "opensles") {
+    return "openslES,aaudio,android";
+  }
+  if (normalized == "aaudio") {
+    return "aaudio,openslES,android";
+  }
+  if (normalized == "android" || normalized == "audiotrack") {
+    return "android,openslES,aaudio";
+  }
+  return raw;
+}
+
 static JNIEnv* GetEnv() {
   return static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
 }
@@ -229,83 +261,231 @@ static bool ShouldEnableInlineAioWorkaround(const std::string& crash_flag_path) 
 }
 
 static std::string GetPrefString(JNIEnv* env, jobject activity, const char* key) {
-  jclass activityClass = env->GetObjectClass(activity);
-  jmethodID getPrefs = env->GetMethodID(activityClass, "getSharedPreferences",
-                                        "(Ljava/lang/String;I)Landroid/content/SharedPreferences;");
-  if (!getPrefs) return {};
-  jstring prefsName = env->NewStringUTF(kPrefsName);
-  jobject prefs = env->CallObjectMethod(activity, getPrefs, prefsName, 0);
-  env->DeleteLocalRef(prefsName);
-  if (HasException(env, "getSharedPreferences") || !prefs) return {};
+  if (!env || !activity || !key || key[0] == '\0') {
+    return {};
+  }
 
-  jclass prefsClass = env->GetObjectClass(prefs);
-  jmethodID getString = env->GetMethodID(
+  std::string out;
+  jclass activityClass = nullptr;
+  jobject prefs = nullptr;
+  jclass prefsClass = nullptr;
+  jstring value = nullptr;
+  jmethodID getPrefs = nullptr;
+  jmethodID getString = nullptr;
+
+  activityClass = env->GetObjectClass(activity);
+  if (!activityClass) {
+    return {};
+  }
+
+  getPrefs = env->GetMethodID(activityClass, "getSharedPreferences",
+                              "(Ljava/lang/String;I)Landroid/content/SharedPreferences;");
+  if (!getPrefs) {
+    goto cleanup;
+  }
+
+  {
+    jstring prefsName = env->NewStringUTF(kPrefsName);
+    if (!prefsName) {
+      goto cleanup;
+    }
+    prefs = env->CallObjectMethod(activity, getPrefs, prefsName, 0);
+    env->DeleteLocalRef(prefsName);
+  }
+  if (HasException(env, "getSharedPreferences") || !prefs) {
+    goto cleanup;
+  }
+
+  prefsClass = env->GetObjectClass(prefs);
+  if (!prefsClass) {
+    goto cleanup;
+  }
+  getString = env->GetMethodID(
       prefsClass, "getString", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
-  if (!getString) return {};
+  if (!getString) {
+    goto cleanup;
+  }
 
-  jstring jkey = env->NewStringUTF(key);
-  jstring jdefault = nullptr;
-  jstring value = static_cast<jstring>(env->CallObjectMethod(prefs, getString, jkey, jdefault));
-  env->DeleteLocalRef(jkey);
-  if (HasException(env, "SharedPreferences.getString")) return {};
+  {
+    jstring jkey = env->NewStringUTF(key);
+    if (!jkey) {
+      goto cleanup;
+    }
+    jstring jdefault = nullptr;
+    value = static_cast<jstring>(env->CallObjectMethod(prefs, getString, jkey, jdefault));
+    env->DeleteLocalRef(jkey);
+  }
+  if (HasException(env, "SharedPreferences.getString")) {
+    goto cleanup;
+  }
 
-  std::string out = JStringToString(env, value);
+  out = JStringToString(env, value);
+
+cleanup:
   if (value) env->DeleteLocalRef(value);
+  if (prefsClass) env->DeleteLocalRef(prefsClass);
+  if (prefs) env->DeleteLocalRef(prefs);
+  if (activityClass) env->DeleteLocalRef(activityClass);
   return out;
 }
 
 static bool CopyUriToPath(JNIEnv* env, jobject activity, const std::string& uriString, const std::string& path) {
-  if (uriString.empty() || path.empty()) return false;
+  if (!env || !activity || uriString.empty() || path.empty()) return false;
 
-  jclass activityClass = env->GetObjectClass(activity);
-  jmethodID getContentResolver = env->GetMethodID(activityClass, "getContentResolver",
-                                                 "()Landroid/content/ContentResolver;");
-  if (!getContentResolver) return false;
-  jobject resolver = env->CallObjectMethod(activity, getContentResolver);
-  if (HasException(env, "getContentResolver") || !resolver) return false;
+  bool success = false;
+  jclass activityClass = nullptr;
+  jobject resolver = nullptr;
+  jclass uriClass = nullptr;
+  jobject uri = nullptr;
+  jclass resolverClass = nullptr;
+  jobject inputStream = nullptr;
+  jclass fosClass = nullptr;
+  jobject outputStream = nullptr;
+  jclass inputClass = nullptr;
+  jclass outputClass = nullptr;
+  jbyteArray buffer = nullptr;
+  jmethodID readMethod = nullptr;
+  jmethodID writeMethod = nullptr;
+  jmethodID closeInput = nullptr;
+  jmethodID closeOutput = nullptr;
 
-  jclass uriClass = env->FindClass("android/net/Uri");
-  jmethodID parse = env->GetStaticMethodID(uriClass, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
-  jstring juri = env->NewStringUTF(uriString.c_str());
-  jobject uri = env->CallStaticObjectMethod(uriClass, parse, juri);
-  env->DeleteLocalRef(juri);
-  if (HasException(env, "Uri.parse") || !uri) return false;
-
-  jclass resolverClass = env->GetObjectClass(resolver);
-  jmethodID openInputStream = env->GetMethodID(
-      resolverClass, "openInputStream", "(Landroid/net/Uri;)Ljava/io/InputStream;");
-  jobject inputStream = env->CallObjectMethod(resolver, openInputStream, uri);
-  if (HasException(env, "openInputStream") || !inputStream) return false;
-
-  jclass fosClass = env->FindClass("java/io/FileOutputStream");
-  jmethodID fosCtor = env->GetMethodID(fosClass, "<init>", "(Ljava/lang/String;)V");
-  jstring jpath = env->NewStringUTF(path.c_str());
-  jobject outputStream = env->NewObject(fosClass, fosCtor, jpath);
-  env->DeleteLocalRef(jpath);
-  if (HasException(env, "FileOutputStream.<init>") || !outputStream) return false;
-
-  jclass inputClass = env->GetObjectClass(inputStream);
-  jclass outputClass = env->GetObjectClass(outputStream);
-  jmethodID readMethod = env->GetMethodID(inputClass, "read", "([B)I");
-  jmethodID closeInput = env->GetMethodID(inputClass, "close", "()V");
-  jmethodID writeMethod = env->GetMethodID(outputClass, "write", "([BII)V");
-  jmethodID closeOutput = env->GetMethodID(outputClass, "close", "()V");
-  if (!readMethod || !writeMethod) return false;
-
-  const int kBufferSize = 64 * 1024;
-  jbyteArray buffer = env->NewByteArray(kBufferSize);
-  while (true) {
-    jint read = env->CallIntMethod(inputStream, readMethod, buffer);
-    if (HasException(env, "InputStream.read")) break;
-    if (read <= 0) break;
-    env->CallVoidMethod(outputStream, writeMethod, buffer, 0, read);
-    if (HasException(env, "OutputStream.write")) break;
+  activityClass = env->GetObjectClass(activity);
+  if (!activityClass) {
+    goto cleanup;
   }
-  env->DeleteLocalRef(buffer);
-  env->CallVoidMethod(inputStream, closeInput);
-  env->CallVoidMethod(outputStream, closeOutput);
-  HasException(env, "close streams");
-  return true;
+
+  {
+    jmethodID getContentResolver = env->GetMethodID(activityClass, "getContentResolver",
+                                                    "()Landroid/content/ContentResolver;");
+    if (!getContentResolver) {
+      goto cleanup;
+    }
+    resolver = env->CallObjectMethod(activity, getContentResolver);
+    if (HasException(env, "getContentResolver") || !resolver) {
+      goto cleanup;
+    }
+  }
+
+  uriClass = env->FindClass("android/net/Uri");
+  if (!uriClass) {
+    goto cleanup;
+  }
+  {
+    jmethodID parse = env->GetStaticMethodID(uriClass, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
+    if (!parse) {
+      goto cleanup;
+    }
+    jstring juri = env->NewStringUTF(uriString.c_str());
+    if (!juri) {
+      goto cleanup;
+    }
+    uri = env->CallStaticObjectMethod(uriClass, parse, juri);
+    env->DeleteLocalRef(juri);
+    if (HasException(env, "Uri.parse") || !uri) {
+      goto cleanup;
+    }
+  }
+
+  resolverClass = env->GetObjectClass(resolver);
+  if (!resolverClass) {
+    goto cleanup;
+  }
+  {
+    jmethodID openInputStream = env->GetMethodID(
+        resolverClass, "openInputStream", "(Landroid/net/Uri;)Ljava/io/InputStream;");
+    if (!openInputStream) {
+      goto cleanup;
+    }
+    inputStream = env->CallObjectMethod(resolver, openInputStream, uri);
+    if (HasException(env, "openInputStream") || !inputStream) {
+      goto cleanup;
+    }
+  }
+
+  fosClass = env->FindClass("java/io/FileOutputStream");
+  if (!fosClass) {
+    goto cleanup;
+  }
+  {
+    jmethodID fosCtor = env->GetMethodID(fosClass, "<init>", "(Ljava/lang/String;)V");
+    if (!fosCtor) {
+      goto cleanup;
+    }
+    jstring jpath = env->NewStringUTF(path.c_str());
+    if (!jpath) {
+      goto cleanup;
+    }
+    outputStream = env->NewObject(fosClass, fosCtor, jpath);
+    env->DeleteLocalRef(jpath);
+    if (HasException(env, "FileOutputStream.<init>") || !outputStream) {
+      goto cleanup;
+    }
+  }
+
+  inputClass = env->GetObjectClass(inputStream);
+  outputClass = env->GetObjectClass(outputStream);
+  if (!inputClass || !outputClass) {
+    goto cleanup;
+  }
+  readMethod = env->GetMethodID(inputClass, "read", "([B)I");
+  closeInput = env->GetMethodID(inputClass, "close", "()V");
+  writeMethod = env->GetMethodID(outputClass, "write", "([BII)V");
+  closeOutput = env->GetMethodID(outputClass, "close", "()V");
+  if (!readMethod || !writeMethod || !closeInput || !closeOutput) {
+    goto cleanup;
+  }
+
+  {
+    const int kBufferSize = 64 * 1024;
+    buffer = env->NewByteArray(kBufferSize);
+    if (!buffer) {
+      goto cleanup;
+    }
+
+    while (true) {
+      jint read = env->CallIntMethod(inputStream, readMethod, buffer);
+      if (HasException(env, "InputStream.read")) {
+        goto cleanup;
+      }
+      if (read < 0) {
+        break;
+      }
+      if (read == 0) {
+        continue;
+      }
+      env->CallVoidMethod(outputStream, writeMethod, buffer, 0, read);
+      if (HasException(env, "OutputStream.write")) {
+        goto cleanup;
+      }
+    }
+    success = true;
+  }
+
+cleanup:
+  if (buffer) env->DeleteLocalRef(buffer);
+  if (inputStream && closeInput) {
+    env->CallVoidMethod(inputStream, closeInput);
+    if (HasException(env, "InputStream.close")) {
+      success = false;
+    }
+  }
+  if (outputStream && closeOutput) {
+    env->CallVoidMethod(outputStream, closeOutput);
+    if (HasException(env, "OutputStream.close")) {
+      success = false;
+    }
+  }
+  if (outputClass) env->DeleteLocalRef(outputClass);
+  if (inputClass) env->DeleteLocalRef(inputClass);
+  if (outputStream) env->DeleteLocalRef(outputStream);
+  if (fosClass) env->DeleteLocalRef(fosClass);
+  if (inputStream) env->DeleteLocalRef(inputStream);
+  if (resolverClass) env->DeleteLocalRef(resolverClass);
+  if (uri) env->DeleteLocalRef(uri);
+  if (uriClass) env->DeleteLocalRef(uriClass);
+  if (resolver) env->DeleteLocalRef(resolver);
+  if (activityClass) env->DeleteLocalRef(activityClass);
+  return success;
 }
 
 struct SetupFiles {
@@ -387,6 +567,9 @@ static bool WriteConfigToml(const std::string& config_path,
   }
   if (!android->contains("tcg_tb_size")) {
     android->insert_or_assign("tcg_tb_size", 128);
+  }
+  if (!android->contains("audio_driver")) {
+    android->insert_or_assign("audio_driver", "auto");
   }
 
   files->insert_or_assign("bootrom_path", mcpx);
@@ -549,9 +732,10 @@ extern "C" int SDL_main(int argc, char* argv[]) {
   (void)argv;
 
   LogInfo("SDL_main: start");
-  // Prefer AAudio on Android, but keep Android AudioTrack as fallback.
-  SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, "aaudio,android",
+  std::string audio_driver_hint = ResolveAndroidAudioDriverHint();
+  SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, audio_driver_hint.c_str(),
                           SDL_HINT_OVERRIDE);
+  LogInfoFmt("SDL_HINT_AUDIODRIVER=%s", audio_driver_hint.c_str());
   SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
   SDL_DisableScreenSaver();
 
