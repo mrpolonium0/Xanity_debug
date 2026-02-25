@@ -322,7 +322,7 @@ static void monitor_init(MCPXAPUState *d)
     int audio_samples = 512;
 #ifdef __ANDROID__
     fifo_frames = 16;
-    audio_samples = 512;
+    audio_samples = 2048;
     fifo_frames = getenv_int_clamped("XEMU_ANDROID_AUDIO_FIFO_FRAMES", 3, 32,
                                      fifo_frames);
     audio_samples = getenv_int_clamped("XEMU_ANDROID_AUDIO_SAMPLES", 256, 4096,
