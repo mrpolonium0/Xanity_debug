@@ -182,6 +182,49 @@
             android:text="@string/settings_hrtf"
             android:textColor="@color/xemu_text_muted" />
 
+          <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="6dp"
+            android:text="@string/settings_audio_driver"
+            android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+            android:textColor="@color/xemu_text_muted" />
+
+          <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/toggle_audio_driver"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="4dp"
+            app:selectionRequired="true"
+            app:singleSelection="true">
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_audio_opensles"
+              style="?attr/materialButtonOutlinedStyle"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:text="@string/settings_audio_driver_opensles" />
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_audio_aaudio"
+              style="?attr/materialButtonOutlinedStyle"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:text="@string/settings_audio_driver_aaudio" />
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_audio_disabled"
+              style="?attr/materialButtonOutlinedStyle"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:text="@string/settings_audio_driver_disabled" />
+
+          </com.google.android.material.button.MaterialButtonToggleGroup>
+
           <!-- Save button -->
           <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_settings_save"

@@ -954,7 +954,7 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
     if ((!audio_env || !audio_env[0]) &&
         (!audio_hint || !audio_hint[0])) {
         SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER,
-                                "openslES,aaudio,android",
+                                "openslES,aaudio,android,dummy",
                                 SDL_HINT_DEFAULT);
         audio_hint = SDL_GetHint(SDL_HINT_AUDIODRIVER);
     }

@@ -188,7 +188,15 @@ static std::string ToLowerAscii(std::string value) {
 }
 
 static std::string ResolveAndroidAudioDriverHint() {
-  constexpr const char* kDefaultAudioDriverHint = "aaudio,android";
+  // OpenSL ES is preferred over AAudio because AAudio exclusively requests
+  // MMAP no-IRQ low-latency outputs (AUDIO_OUTPUT_FLAG_MMAP_NOIRQ). On some
+  // devices (e.g. Honor/Huawei with Android 14) the MMAP output count is
+  // capped and openDirectOutput fails when the limit is reached, leaving the
+  // audio stream permanently inactive (isActive:0) and hanging the audio
+  // thread. OpenSL ES uses the standard AudioTrack path which has no such
+  // cap. "dummy" is the silent no-op SDL audio driver used as a last resort
+  // so that audio failure never prevents the emulator from running.
+  constexpr const char* kDefaultAudioDriverHint = "openslES,aaudio,android,dummy";
   const char* value = SDL_getenv("XEMU_ANDROID_AUDIO_DRIVER");
   if (!value || value[0] == '\0') {
     return kDefaultAudioDriverHint;
@@ -200,13 +208,16 @@ static std::string ResolveAndroidAudioDriverHint() {
     return kDefaultAudioDriverHint;
   }
   if (normalized == "opensl" || normalized == "opensles") {
-    return "openslES,android";
+    return "openslES,android,dummy";
   }
   if (normalized == "aaudio") {
-    return "aaudio,android";
+    return "aaudio,android,dummy";
   }
   if (normalized == "android" || normalized == "audiotrack") {
-    return "android";
+    return "android,dummy";
+  }
+  if (normalized == "null" || normalized == "none" || normalized == "dummy") {
+    return "dummy";
   }
   return raw;
 }
@@ -579,6 +590,7 @@ struct SetupFiles {
   std::string eeprom;
   std::string config_path;
   std::string inline_aio_flag_path;
+  std::string audio_driver; // raw pref value, e.g. "openslES", "aaudio", "dummy"
 };
 
 static bool WriteConfigToml(const std::string& config_path,
@@ -662,7 +674,7 @@ static bool WriteConfigToml(const std::string& config_path,
     android->insert_or_assign("tcg_tb_size", 128);
   }
   if (!android->contains("audio_driver")) {
-    android->insert_or_assign("audio_driver", "aaudio");
+    android->insert_or_assign("audio_driver", "openslES");
   }
 
   files->insert_or_assign("bootrom_path", mcpx);
@@ -786,6 +798,7 @@ static SetupFiles SyncSetupFiles() {
       emuSettings.tcg_thread = "single";
     }
   }
+  out.audio_driver = GetPrefString(env, activity, "setting_audio_driver");
 
   out.config_path = base + "/xemu.toml";
   WriteConfigToml(out.config_path, out.mcpx, out.flash, out.hdd, out.dvd, out.eeprom, emuSettings);
@@ -853,6 +866,19 @@ extern "C" int SDL_main(int argc, char* argv[]) {
   LoadGameControllerMappingsFromAssets();
 
   SetupFiles setup = SyncSetupFiles();
+
+  // If the user explicitly chose an audio driver in Settings, override the
+  // hint we set at startup.  Audio is not initialized until qemu_init() so
+  // it is safe to change SDL_HINT_AUDIODRIVER here.
+  if (!setup.audio_driver.empty()) {
+    // Reuse ResolveAndroidAudioDriverHint logic by temporarily writing the
+    // pref value into XEMU_ANDROID_AUDIO_DRIVER and re-resolving.
+    setenv("XEMU_ANDROID_AUDIO_DRIVER", setup.audio_driver.c_str(), 1);
+    std::string resolved = ResolveAndroidAudioDriverHint();
+    SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, resolved.c_str(),
+                            SDL_HINT_OVERRIDE);
+    LogInfoFmt("SDL_HINT_AUDIODRIVER (from prefs)=%s", resolved.c_str());
+  }
 
   xemu_android_set_inline_aio_crash_flag_path(setup.inline_aio_flag_path.empty()
                                                    ? nullptr
