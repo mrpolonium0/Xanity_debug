@@ -41,3 +41,4 @@ replay_pid*.log
 *.aab
 *.txt
 .claude/settings.json
+android/key.properties
