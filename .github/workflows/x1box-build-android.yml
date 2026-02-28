@@ -1,6 +1,6 @@
 name: Android (X1 BOX) - Signed
 
-on: 
+on:
   workflow_dispatch:
     inputs:
       increment_mode:
